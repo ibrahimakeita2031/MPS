@@ -42,6 +42,9 @@
     persistentLocalCache, persistentSingleTabManager,
     disableNetwork, enableNetwork, waitForPendingWrites
   } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+  import {
+    getAuth, signInAnonymously, onAuthStateChanged
+  } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyANWGyR6PSxDVcdlIaU0OX37C2C9H-RfQo",
@@ -64,11 +67,29 @@
   // single-blob localStorage model, so no other app code needs to change).
   const DB_DOC = doc(db, "mps", "db");
 
-  window.__firebase = {
-    db, DB_DOC, getDoc, setDoc, onSnapshot,
-    disableNetwork, enableNetwork, waitForPendingWrites
-  };
-  window.dispatchEvent(new Event('firebase-ready'));
+  // Auth anonyme : requise par les règles Firestore (request.auth != null).
+  // Ceci ne remplace pas le login applicatif (écran login/mot de passe de
+  // l'app, toujours utilisé pour identifier qui est connecté côté UI) — elle
+  // sert uniquement à obtenir un jeton Firebase valide pour que Firestore
+  // accepte les lectures/écritures.
+  const auth = getAuth(fbApp);
+
+  function markFirebaseReady(){
+    window.__firebase = {
+      db, DB_DOC, getDoc, setDoc, onSnapshot,
+      disableNetwork, enableNetwork, waitForPendingWrites
+    };
+    window.dispatchEvent(new Event('firebase-ready'));
+  }
+
+  onAuthStateChanged(auth, (user)=>{
+    if(user){ markFirebaseReady(); }
+  });
+  signInAnonymously(auth).catch((err)=>{
+    console.warn('Authentification Firebase anonyme impossible : l\'app continue en mode local.', err);
+    // Pas de window.__firebase => syncFirebaseInBackground() restera en
+    // mode local-only (voir waitForFirebase), sans planter l'application.
+  });
 </script>
 <style>
 :root{
@@ -1585,7 +1606,9 @@ const NAV_ITEMS = [
   { id:'avances', label:'Avances', ic:'advance', roles:['Administrateur','Direction','Comptable','Responsable Agence','Agent PDV'] },
   { id:'retours', label:'Retours', ic:'returns', roles:['Administrateur','Direction','Comptable','Responsable Agence','Agent PDV'] },
   { sep:'GESTION' },
+  { id:'recapitulatif', label:'Récapitulatif', ic:'dashboard', roles:'all' },
   { id:'rapports', label:'Rapports', ic:'reports', roles:'all' },
+  { id:'journal', label:"Journal d'audit", ic:'reports', roles:['Administrateur','Direction','Comptable'] },
   { id:'utilisateurs', label:'Utilisateurs', ic:'users', roles:['Administrateur'] },
   { id:'parametres', label:'Paramètres', ic:'settings', roles:['Administrateur'] },
 ];
@@ -1674,6 +1697,8 @@ const VIEW_META = {
   retours:{ title:'Retours', crumb:'Montants retournés & remboursements' },
   credit:{ title:'Crédit Fournisseur OFMG', crumb:'Dette, paiements & échéances' },
   rapports:{ title:'Rapports', crumb:'Journalier · Hebdomadaire · Mensuel' },
+  recapitulatif:{ title:'Récapitulatif', crumb:"Vue consolidée de toutes les données" },
+  journal:{ title:"Journal d'audit", crumb:'Historique des actions utilisateurs' },
   utilisateurs:{ title:'Utilisateurs & Droits', crumb:'Gestion des accès' },
   parametres:{ title:'Paramètres', crumb:'Configuration système' },
 };
@@ -1709,6 +1734,8 @@ function renderView(){
     retours: renderRetoursView,
     credit: renderCreditView,
     rapports: renderRapportsView,
+    recapitulatif: renderRecapitulatifView,
+    journal: renderJournalView,
     utilisateurs: renderUtilisateursView,
     parametres: renderParametresView,
   };
@@ -2838,6 +2865,7 @@ function renderVentesView(){
               <td>${fmtGNF(v.montant)}</td>
               <td>${fmtDateTime(v.date)}</td>
               <td style="white-space:nowrap">
+                <button class="btn btn-outline btn-sm" onclick="imprimerRecuVente('${v.id}')">🧾 Reçu</button>
                 <button class="btn btn-outline btn-sm" onclick="openVenteModal('${v.id}')">Modifier</button>
                 <button class="btn btn-danger btn-sm" onclick="deleteVente('${v.id}')">Suppr.</button>
               </td>
@@ -2863,6 +2891,42 @@ function applyVenteEffect(pdvId, type, montant){
     DB.stockFloat[pdvId] = (DB.stockFloat[pdvId]||0) + montant;
   }
   return null;
+}
+
+function imprimerRecuVente(id){
+  const v = DB.ventes.find(x=>x.id===id);
+  if(!v){ toast('Mouvement introuvable.','error'); return; }
+  const w = window.open('', '_blank');
+  if(!w){ toast('Autorisez les fenêtres pop-up pour imprimer.','error'); return; }
+  const typeLabel = v.type==='e-recharge' ? 'Vente E‑Recharge' : (v.type==='depot' ? 'Dépôt (cash‑in)' : 'Retrait (cash‑out)');
+  const montantLabel = v.type==='e-recharge' ? fmtNum(v.montant)+' unités' : fmtGNF(v.montant);
+  w.document.write(`<html><head><title>Reçu — ${escapeHtml(v.id)}</title><style>
+    *{box-sizing:border-box}body{font-family:Arial,sans-serif;padding:0;color:#111;display:flex;justify-content:center}
+    .recu{width:320px;padding:22px;border:1px dashed #999;margin:24px}
+    .recu h1{font-size:15px;margin:0 0 2px;text-align:center;color:#f57c00}
+    .recu .sub{text-align:center;font-size:10.5px;color:#666;margin-bottom:14px}
+    .row{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;border-bottom:1px dashed #ddd}
+    .row .lbl{color:#666} .row .val{font-weight:700;text-align:right}
+    .montant{margin-top:12px;text-align:center;font-size:19px;font-weight:900;color:#111}
+    .foot{margin-top:16px;text-align:center;font-size:10px;color:#888}
+    .no-print{text-align:center;margin:16px 0}
+    @media print{.no-print{display:none}body{padding:0}}
+  </style></head><body>
+  <div class="recu">
+    <div class="no-print"><button onclick="window.print()" style="padding:8px 16px;border:0;border-radius:8px;background:#f57c00;color:#fff;font-weight:800">🖨️ Imprimer</button></div>
+    <img src="${LOGO_MARK}" alt="MPS" style="display:block;margin:0 auto 8px;height:34px;width:auto">
+    <h1>Reçu de transaction</h1>
+    <div class="sub">MPS — Male Prestation Services</div>
+    <div class="row"><span class="lbl">Référence</span><span class="val">${escapeHtml(v.id)}</span></div>
+    <div class="row"><span class="lbl">Type</span><span class="val">${escapeHtml(typeLabel)}</span></div>
+    <div class="row"><span class="lbl">Point de vente</span><span class="val">${escapeHtml(pdvName(v.refId))}</span></div>
+    <div class="row"><span class="lbl">Date</span><span class="val">${fmtDateTime(v.date)}</span></div>
+    <div class="row"><span class="lbl">Émis par</span><span class="val">${escapeHtml(currentUser().nom)}</span></div>
+    <div class="montant">${montantLabel}</div>
+    <div class="foot">Reçu généré le ${fmtDateTime(nowISO())}<br>Document non fiscal — à conserver comme preuve d'opération.</div>
+  </div>
+  </body></html>`);
+  w.document.close();
 }
 
 function openVenteModal(id){
@@ -3719,6 +3783,200 @@ function openPaiementModal(echeanceId){
    VUE : RAPPORTS (Journalier / Hebdomadaire / Mensuel)
    ========================================================= */
 let rapportTab = 'journalier';
+let journalFilters = { dateDebut:'', dateFin:'', userId:'', q:'' };
+
+function renderJournalView(){
+  document.getElementById('topbarActions').innerHTML = '';
+  const host = document.getElementById('viewsHost');
+  let list = [...(DB.activityLog||[])];
+  if(journalFilters.dateDebut || journalFilters.dateFin) list = list.filter(a=>inDateRange(a.date, journalFilters.dateDebut, journalFilters.dateFin));
+  if(journalFilters.userId) list = list.filter(a=>a.user===journalFilters.userId);
+  if(journalFilters.q.trim()){
+    const q = journalFilters.q.trim().toLowerCase();
+    list = list.filter(a=>a.texte.toLowerCase().includes(q));
+  }
+  list.sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const usersOptions = DB.users.map(u=>`<option value="${u.id}" ${journalFilters.userId===u.id?'selected':''}>${escapeHtml(u.nom)}</option>`).join('');
+  host.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card" style="--accent:var(--gold)"><div class="lbl"><span class="ic">${icon('reports')}</span>Actions journalisées</div><div class="val">${fmtNum(DB.activityLog.length)}</div></div>
+      <div class="kpi-card" style="--accent:var(--teal)"><div class="lbl"><span class="ic">${icon('users')}</span>Utilisateurs actifs</div><div class="val">${fmtNum(new Set(DB.activityLog.map(a=>a.user)).size)}</div></div>
+      <div class="kpi-card" style="--accent:var(--orange)"><div class="lbl"><span class="ic">${icon('reports')}</span>Résultats filtrés</div><div class="val">${fmtNum(list.length)}</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Journal d'audit</h3>
+        <div class="chip-select">
+          ${dateRangeFilterHtml(journalFilters.dateDebut, journalFilters.dateFin,
+            "journalFilters.dateDebut=this.value; renderJournalView()",
+            "journalFilters.dateFin=this.value; renderJournalView()",
+            "journalFilters.dateDebut=''; journalFilters.dateFin=''; renderJournalView()")}
+          <select onchange="journalFilters.userId=this.value; renderJournalView()">
+            <option value="">Tous les utilisateurs</option>
+            ${usersOptions}
+          </select>
+          <input type="text" placeholder="Rechercher…" value="${escapeHtml(journalFilters.q)}"
+            oninput="journalFilters.q=this.value; renderJournalView()" style="min-width:160px">
+        </div>
+        <div class="sub">${list.length} action(s) — conservation des 200 dernières actions</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date &amp; heure</th><th>Utilisateur</th><th>Action</th></tr></thead>
+          <tbody>${list.length ? list.map(a=>{
+            const u = DB.users.find(x=>x.id===a.user);
+            return `<tr>
+              <td style="white-space:nowrap">${fmtDateTime(a.date)}</td>
+              <td class="strong">${u?escapeHtml(u.nom):'—'}</td>
+              <td>${escapeHtml(a.texte)}</td>
+            </tr>`;
+          }).join('') : `<tr><td colspan="3">Aucune action ne correspond aux filtres.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function buildRecapData(){
+  const stockFloat = scopedTotalFloat();
+  const stockRecharge = scopedTotalRecharge();
+  const ventes = scopedVentes();
+  const totalVentes = ventes.reduce((s,v)=>s+v.montant,0);
+  const transferts = scopedTransferts();
+  const conversions = scopedConversions();
+  const totalCommissions = conversions.reduce((s,c)=>s+c.commission,0);
+  const credits = DB.creditsClients||[];
+  const csStats = creditsClientsStats(credits);
+  const avances = DB.avances||[];
+  const totalAvances = avances.reduce((s,a)=>s+a.montant,0);
+  const retours = DB.retours||[];
+  const encoursRetours = retours.reduce((s,r)=>s+(r.montant-r.montantRembourse),0);
+  const commandes = DB.commandes||[];
+  const soldeCreditOFMG = DB.creditOFMG.solde;
+  const soldeStockELivre = stockELivreSolde();
+
+  const kpis = [
+    ['Stock Float', fmtGNF(stockFloat)],
+    ['Stock E-Recharge', fmtNum(stockRecharge)+' unités'],
+    ['Volume ventes', fmtGNF(totalVentes)],
+    ['Encours crédits', fmtGNF(csStats.encours)],
+  ];
+  const sections = [
+    { titre:'Orange Money — Float', ic:'float', rows:[
+      ['Stock float total (visible)', fmtGNF(stockFloat)],
+      ['Solde crédit fournisseur OFMG', fmtGNF(soldeCreditOFMG)],
+      ['Commandes enregistrées', fmtNum(commandes.length)],
+    ]},
+    { titre:'E-Recharge', ic:'recharge', rows:[
+      ['Stock e-recharge réseau (visible)', fmtNum(stockRecharge)+' unités'],
+      ['Stock grossiste (Orange GN)', fmtGNF(soldeStockELivre.montant)+' · '+fmtNum(soldeStockELivre.paquets)+' paquets'],
+    ]},
+    { titre:'Activité commerciale', ic:'sales', rows:[
+      ['Volume des ventes (total)', fmtGNF(totalVentes)],
+      ['Nombre de ventes', fmtNum(ventes.length)],
+      ['Transferts enregistrés', fmtNum(transferts.length)],
+      ['Conversions Dual Wallet', fmtNum(conversions.length)],
+      ['Commissions cumulées', fmtGNF(totalCommissions)],
+    ]},
+    { titre:'Crédits, avances & retours', ic:'creditNote', rows:[
+      ['Encours crédits clients', fmtGNF(csStats.encours)],
+      ['Total avances déposées', fmtGNF(totalAvances)],
+      ["Nombre d'avances", fmtNum(avances.length)],
+      ['Encours retours non remboursés', fmtGNF(encoursRetours)],
+      ['Nombre de retours', fmtNum(retours.length)],
+    ]},
+  ];
+  return { titre:'Récapitulatif — Vue consolidée', kpis, sections };
+}
+
+function imprimerRecap(){
+  const data = buildRecapData();
+  const w = window.open('', '_blank');
+  if(!w){ toast('Autorisez les fenêtres pop-up pour imprimer.','error'); return; }
+  w.document.write(`<html><head><title>${escapeHtml(data.titre)}</title><style>
+    *{box-sizing:border-box}body{font-family:Arial,sans-serif;padding:28px;color:#172554}
+    h1{color:#6d28d9;margin:0 0 6px}h2{font-size:14px;color:#7c3aed;margin:20px 0 8px}
+    .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}
+    .kpi{border:1px solid #ddd6fe;border-radius:10px;padding:12px;background:#faf9ff}
+    .lbl{font-size:10px;color:#64748b}.val{font-size:15px;font-weight:800;margin-top:4px}
+    table{width:100%;border-collapse:collapse;margin:6px 0 16px}td{border:1px solid #dbe3f0;padding:7px;font-size:11.5px}
+    td:first-child{font-weight:700}td:last-child{text-align:right}
+    @media print{.no-print{display:none}}
+  </style></head><body>
+  <div class="no-print" style="text-align:right;margin-bottom:10px"><button onclick="window.print()" style="padding:9px 16px;border:0;border-radius:8px;background:#7c3aed;color:#fff;font-weight:800">🖨️ Imprimer</button></div>
+  <h1>${escapeHtml(data.titre)}</h1><div style="font-size:11px;color:#64748b">Édité le ${fmtDateTime(nowISO())} · ${escapeHtml(currentUser().nom)}</div>
+  <div class="kpis">${data.kpis.map(([l,v])=>`<div class="kpi"><div class="lbl">${escapeHtml(l)}</div><div class="val">${escapeHtml(String(v))}</div></div>`).join('')}</div>
+  ${data.sections.map(s=>`<h2>${escapeHtml(s.titre)}</h2><table><tbody>${s.rows.map(([l,v])=>`<tr><td>${escapeHtml(l)}</td><td>${escapeHtml(String(v))}</td></tr>`).join('')}</tbody></table>`).join('')}
+  </body></html>`);
+  w.document.close();
+}
+
+function exportRecapPDF(){
+  toast('Génération du PDF en cours…');
+  const data = buildRecapData();
+  setTimeout(()=>{
+    const w = window.open('', '_blank');
+    if(!w){ toast('Autorisez les fenêtres pop-up pour imprimer.','error'); return; }
+    w.document.write(`<html><head><title>${data.titre} - MPS</title><style>
+      body{font-family:Arial,sans-serif;padding:40px;color:#111}
+      h1{color:#f57c00;margin-bottom:4px} h2{font-size:14px;margin:22px 0 8px;color:#333}
+      table{width:100%;border-collapse:collapse;margin-top:6px}
+      td{border:1px solid #ccc;padding:7px 9px;font-size:12.5px}
+      td:first-child{font-weight:700;background:#f4f6f9} td:last-child{text-align:right}
+      .kpis{display:flex;gap:14px;margin-top:16px;flex-wrap:wrap}
+      .kpi{border:1px solid #ddd;border-radius:8px;padding:10px 16px;flex:1;min-width:140px}
+      .kpi .lbl{font-size:11px;color:#777} .kpi .val{font-size:15px;font-weight:700;margin-top:3px}
+      @media print{ button{display:none} }
+    </style></head><body>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px"><img src="${LOGO_MARK}" alt="MPS" style="height:36px;width:auto"><h1 style="margin:0">${data.titre}</h1></div>
+      <p style="color:#555;font-size:12px"><b>Date d'édition :</b> ${fmtDateTime(nowISO())} · <b>Généré par :</b> ${escapeHtml(currentUser().nom)}</p>
+      <div class="kpis">${data.kpis.map(([lbl,val])=>`<div class="kpi"><div class="lbl">${escapeHtml(lbl)}</div><div class="val">${escapeHtml(String(val))}</div></div>`).join('')}</div>
+      ${data.sections.map(s=>`<h2>${escapeHtml(s.titre)}</h2><table><tbody>${s.rows.map(([l,v])=>`<tr><td>${escapeHtml(l)}</td><td>${escapeHtml(String(v))}</td></tr>`).join('')}</tbody></table>`).join('')}
+      <p style="color:#888;font-size:12px;margin-top:24px">Utilisez Ctrl/Cmd+P dans cette fenêtre pour enregistrer en PDF.</p>
+      <button onclick="window.print()" style="padding:8px 16px;border-radius:6px;border:1px solid #f57c00;background:#fff;color:#f57c00;font-weight:700;cursor:pointer">Imprimer / Enregistrer en PDF</button>
+    </body></html>`);
+    w.document.close();
+    w.focus();
+  }, 400);
+}
+
+function exportRecapExcel(){
+  const data = buildRecapData();
+  const wb = XLSX.utils.book_new();
+  const aoa = [[data.titre],[],[`Généré le ${fmtDateTime(nowISO())} par ${currentUser().nom}`],[],
+    ['Indicateur','Valeur'], ...data.kpis, []];
+  data.sections.forEach(s=>{ aoa.push([s.titre]); s.rows.forEach(r=>aoa.push(r)); aoa.push([]); });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  XLSX.utils.book_append_sheet(wb, ws, 'Récapitulatif');
+  XLSX.writeFile(wb, `MPS_recapitulatif_${todayISO()}.xlsx`);
+  toast('Fichier Excel exporté','success');
+}
+
+function renderRecapitulatifView(){
+  document.getElementById('topbarActions').innerHTML = `
+    <button class="btn btn-outline btn-sm" onclick="exportRecapPDF()">Export PDF</button>
+    <button class="btn btn-outline btn-sm" onclick="exportRecapExcel()">Export Excel</button>
+    <button class="btn btn-gold btn-sm" onclick="imprimerRecap()">🖨️ Imprimer</button>`;
+  const host = document.getElementById('viewsHost');
+  const { kpis, sections } = buildRecapData();
+
+  host.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card" style="--accent:var(--gold)"><div class="lbl"><span class="ic">${icon('float')}</span>${kpis[0][0]}</div><div class="val">${kpis[0][1]}</div></div>
+      <div class="kpi-card" style="--accent:var(--teal)"><div class="lbl"><span class="ic">${icon('recharge')}</span>${kpis[1][0]}</div><div class="val">${kpis[1][1]}</div></div>
+      <div class="kpi-card" style="--accent:var(--orange)"><div class="lbl"><span class="ic">${icon('sales')}</span>${kpis[2][0]}</div><div class="val">${kpis[2][1]}</div></div>
+      <div class="kpi-card" style="--accent:var(--red)"><div class="lbl"><span class="ic">${icon('creditNote')}</span>${kpis[3][0]}</div><div class="val">${kpis[3][1]}</div></div>
+    </div>
+    ${sections.map(s=>`
+      <div class="panel">
+        <div class="panel-head"><h3><span class="ic">${icon(s.ic)}</span> ${escapeHtml(s.titre)}</h3></div>
+        <div class="table-wrap">
+          <table>
+            <tbody>${s.rows.map(([lbl,val])=>`<tr><td class="strong">${escapeHtml(lbl)}</td><td style="text-align:right">${val}</td></tr>`).join('')}</tbody>
+          </table>
+        </div></div>`).join('')}
+    <div style="font-size:11px;color:var(--text-dim);margin-top:4px">Données consolidées en temps réel, filtrées selon votre périmètre d'accès. Pour le détail transaction par transaction, consultez les modules Rapports ou Journal d'audit.</div>`;
+}
+
 function renderRapportsView(){
   document.getElementById('topbarActions').innerHTML = '';
   const host = document.getElementById('viewsHost');
