@@ -1257,21 +1257,14 @@ function seedDB(){
     });
   })();
 
-  // mustChangePassword:true force un changement de mot de passe à la première
-  // connexion (voir renderForceChangePassword). Les mots de passe ci-dessous
-  // ne sont que des valeurs temporaires de démarrage : comme ce fichier est
-  // public (dépôt Git, code source livré au client), TOUT mot de passe écrit
-  // ici en dur doit être considéré comme déjà compromis. La vraie protection
-  // vient du changement obligatoire, pas de la complexité du mot de passe
-  // temporaire choisi.
   const users = [
-    { id:'admin', nom:'Administrateur MPS', login:'admin', motdepasse:'admin123', role:'Administrateur', agenceId:null, mustChangePassword:true },
-    { id:'direction', nom:'Sény Condé (Direction)', login:'direction', motdepasse:'direction123', role:'Direction', agenceId:null, mustChangePassword:true },
-    { id:'agence_cky', nom:'Fatoumata Camara', login:'agence.cky', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-CKY', mustChangePassword:true },
-    { id:'agence_mtt', nom:'Ibrahima Sory Bah', login:'agence.mtt', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-MTT', mustChangePassword:true },
-    { id:'agence_rtm', nom:'Aïssatou Diallo', login:'agence.rtm', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-RTM', mustChangePassword:true },
-    { id:'finance', nom:'Comptable MPS', login:'finance', motdepasse:'finance123', role:'Comptable', agenceId:null, mustChangePassword:true },
-    { id:'agent_pdv1', nom:'Agent PDV Madina', login:'agent.pdv1', motdepasse:'agent123', role:'Agent PDV', agenceId:'AG-CKY', pdvId:'PDV-001', mustChangePassword:true },
+    { id:'admin', nom:'Administrateur MPS', login:'admin', motdepasse:'admin123', role:'Administrateur', agenceId:null },
+    { id:'direction', nom:'Sény Condé (Direction)', login:'direction', motdepasse:'direction123', role:'Direction', agenceId:null },
+    { id:'agence_cky', nom:'Fatoumata Camara', login:'agence.cky', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-CKY' },
+    { id:'agence_mtt', nom:'Ibrahima Sory Bah', login:'agence.mtt', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-MTT' },
+    { id:'agence_rtm', nom:'Aïssatou Diallo', login:'agence.rtm', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-RTM' },
+    { id:'finance', nom:'Comptable MPS', login:'finance', motdepasse:'finance123', role:'Comptable', agenceId:null },
+    { id:'agent_pdv1', nom:'Agent PDV Madina', login:'agent.pdv1', motdepasse:'agent123', role:'Agent PDV', agenceId:'AG-CKY', pdvId:'PDV-001' },
   ];
 
   const activityLog = [
@@ -1281,7 +1274,7 @@ function seedDB(){
   ];
 
   return {
-    version:4,
+    version:5,
     settings:{ tauxCommissionDualWallet: 5.2, alerteFloatSeuil: 15000000, alerteRechargeSeuil: 5000, lastBackupDate: null },
     agences, pdvs, stockFloat, stockRecharge, commandes, transferts, conversions, ventes,
     creditOFMG, creditsClients, avances, retours, stockERechargeLivre, users, activityLog,
@@ -1300,7 +1293,7 @@ function emptyDB(){
   // n'existe plus (juste "sans portée visible", mais autant repartir propre).
   const users = seed.users.map(u=>({ ...u, agenceId:null, pdvId:undefined }));
   return {
-    version:4,
+    version:5,
     settings:{ tauxCommissionDualWallet: 5.2, alerteFloatSeuil: 15000000, alerteRechargeSeuil: 5000, lastBackupDate: null },
     agences: [], pdvs: [],
     stockFloat: { central: 0 }, stockRecharge: { central: 0 },
@@ -1360,22 +1353,6 @@ async function migrateDB(){
       if(u.motdepasse && !u.passHash){ u.passHash = await hashPassword(u.motdepasse); delete u.motdepasse; changed = true; }
     }
     DB.version = 4; changed = true;
-  }
-  if(DB.version < 5){
-    // Force le changement de mot de passe pour les comptes qui utilisent
-    // encore un mot de passe par défaut connu (admin123, direction123,
-    // agence123, finance123, agent123). Un compte dont le mot de passe a déjà
-    // été personnalisé n'est pas concerné : on ne l'embête pas inutilement.
-    const defaultHashes = await Promise.all(
-      ['admin123','direction123','agence123','finance123','agent123'].map(hashPassword)
-    );
-    for(const u of DB.users){
-      if(u.mustChangePassword === undefined){
-        u.mustChangePassword = defaultHashes.includes(u.passHash);
-        changed = true;
-      }
-    }
-    DB.version = 5; changed = true;
   }
   if(changed){ saveDB(); }
 }
@@ -4393,16 +4370,13 @@ function openUserModal(id){
     if(role==='Agent PDV' && !pdvId){ document.getElementById('userError').textContent = "Sélectionnez le PDV de rattachement (aucun PDV disponible dans cette agence)."; return; }
     if(existing){
       existing.nom = nom; existing.login = login; existing.photo = pendingPhoto;
-      // Si l'admin définit un nouveau mot de passe pour ce compte, l'utilisateur
-      // devra le changer à sa prochaine connexion (il ne doit pas rester sur
-      // un mot de passe choisi par quelqu'un d'autre).
-      if(passRaw){ existing.passHash = await hashPassword(passRaw); existing.mustChangePassword = true; }
+      if(passRaw){ existing.passHash = await hashPassword(passRaw); }
       if(existing.id!=='admin'){ existing.role = role; existing.agenceId = agenceId; existing.pdvId = pdvId; }
       logActivity(`Utilisateur modifié : ${nom}`);
       saveDB(); closeModal(); renderUtilisateursView(); renderSidebar(); toast('Utilisateur mis à jour','success');
     } else {
       const passHash = await hashPassword(passRaw);
-      DB.users.push({ id: uid('U'), nom, login, passHash, role, agenceId, pdvId, photo: pendingPhoto, mustChangePassword:true });
+      DB.users.push({ id: uid('U'), nom, login, passHash, role, agenceId, pdvId, photo: pendingPhoto });
       logActivity(`Utilisateur créé : ${nom} (${role})`);
       saveDB(); closeModal(); renderUtilisateursView(); toast('Utilisateur créé','success');
     }
@@ -4457,7 +4431,7 @@ function renderParametresView(){
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <button class="btn btn-teal" onclick="exportFullBackup()">Exporter toutes les données (JSON)</button>
-        <button class="btn btn-danger" onclick="resetDemoData()">Remettre toutes les données à zéro</button>
+        <button class="btn btn-danger" onclick="resetDemoData()">↺ Remettre à zéro toutes les données démo</button>
         <button class="btn btn-danger" onclick="resetAllToEmpty()">Vider toutes les données (démarrage à blanc)</button>
       </div>
     </div>`;
@@ -4488,7 +4462,7 @@ function exportFullBackup(){
   renderView();
 }
 async function resetDemoData(){
-  if(!confirm('Supprimer toutes les données de démonstration et repartir à zéro ? Les comptes utilisateurs seront conservés. Cette action est irréversible.')) return;
+  if(!confirm('Remettre à zéro TOUTES les données de démonstration (agences, PDV, stocks, ventes, transferts, commandes, crédits, activités, etc.) ? Les comptes utilisateurs seront conservés. Cette action est irréversible.')) return;
   if(prompt('Pour confirmer cette action irréversible, tapez RESET en majuscules :') !== 'RESET'){
     toast('Réinitialisation annulée.','error');
     return;
@@ -4564,13 +4538,6 @@ async function boot(){
   if(sessionUser){
     document.getElementById('loginScreen').style.display='none';
     document.getElementById('app').classList.add('active');
-    if(sessionUser.mustChangePassword){
-      // Bloque l'accès au reste de l'app tant que le mot de passe temporaire
-      // n'a pas été changé. On ne montre pas la barre latérale ni les vues :
-      // c'est un écran plein qui remplace tout, sans échappatoire.
-      renderForceChangePassword(sessionUser);
-      return;
-    }
     currentView = 'dashboard';
     renderSidebar();
     renderView();
@@ -4581,44 +4548,6 @@ async function boot(){
   }
 }
 boot();
-
-/* =========================================================
-   CHANGEMENT DE MOT DE PASSE OBLIGATOIRE (première connexion)
-   ========================================================= */
-function renderForceChangePassword(user){
-  const host = document.getElementById('viewsHost');
-  document.getElementById('sidebar').innerHTML = '';
-  document.getElementById('topbarActions').innerHTML = '';
-  document.getElementById('viewTitle').textContent = 'Changement de mot de passe requis';
-  document.getElementById('viewBreadcrumb').textContent = 'Sécurité du compte';
-  host.innerHTML = `
-    <div class="panel" style="max-width:420px;margin:40px auto">
-      <div class="panel-head"><h3>Bonjour ${escapeHtml(user.nom)}</h3><div class="sub">Pour des raisons de sécurité, vous devez définir un nouveau mot de passe avant de continuer. Le mot de passe temporaire fourni ne doit pas rester en usage.</div></div>
-      <form id="forceChangeForm" style="display:flex;flex-direction:column;gap:14px;margin-top:14px">
-        <div class="field"><label>Nouveau mot de passe</label><input type="password" id="fcNewPass" autocomplete="new-password" minlength="6" required></div>
-        <div class="field"><label>Confirmer le nouveau mot de passe</label><input type="password" id="fcNewPass2" autocomplete="new-password" minlength="6" required></div>
-        <div class="login-error" id="fcError"></div>
-        <button type="submit" class="btn btn-gold">Définir le mot de passe et continuer</button>
-      </form>
-      <button class="logout-btn" style="margin-top:14px" onclick="doLogout()">Se déconnecter</button>
-    </div>`;
-  document.getElementById('forceChangeForm').addEventListener('submit', async e=>{
-    e.preventDefault();
-    const p1 = document.getElementById('fcNewPass').value;
-    const p2 = document.getElementById('fcNewPass2').value;
-    const err = document.getElementById('fcError');
-    if(p1.length < 6){ err.textContent = 'Le mot de passe doit contenir au moins 6 caractères.'; return; }
-    if(p1 !== p2){ err.textContent = 'Les deux mots de passe ne correspondent pas.'; return; }
-    user.passHash = await hashPassword(p1);
-    user.mustChangePassword = false;
-    logActivity(`Mot de passe changé (première connexion) : ${user.nom}`);
-    saveDB();
-    toast('Mot de passe mis à jour.', 'success');
-    currentView = 'dashboard';
-    renderSidebar();
-    renderView();
-  });
-}
 
 // Register service worker for offline/installable PWA support.
 if('serviceWorker' in navigator){
