@@ -43,7 +43,9 @@
     disableNetwork, enableNetwork, waitForPendingWrites
   } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
   import {
-    getAuth, signInAnonymously, onAuthStateChanged
+    getAuth, signInAnonymously, onAuthStateChanged,
+    signInWithEmailAndPassword, createUserWithEmailAndPassword,
+    updatePassword, signOut
   } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 
   const firebaseConfig = {
@@ -67,17 +69,21 @@
   // single-blob localStorage model, so no other app code needs to change).
   const DB_DOC = doc(db, "mps", "db");
 
-  // Auth anonyme : requise par les règles Firestore (request.auth != null).
-  // Ceci ne remplace pas le login applicatif (écran login/mot de passe de
-  // l'app, toujours utilisé pour identifier qui est connecté côté UI) — elle
-  // sert uniquement à obtenir un jeton Firebase valide pour que Firestore
-  // accepte les lectures/écritures.
+  // Auth nominative (email/mot de passe) : chaque identifiant applicatif
+  // (admin, agence.cky, ...) est converti en email technique
+  // "<login>@mps-app.local" — invisible pour l'utilisateur, qui continue à
+  // taper son identifiant habituel. Ceci permet aux règles Firestore de
+  // vérifier QUI écrit (request.auth.uid), pas seulement QU'IL est connecté.
+  // signInAnonymously reste en repli si l'auth nominative échoue, pour ne
+  // jamais bloquer complètement l'app hors-ligne.
   const auth = getAuth(fbApp);
 
   function markFirebaseReady(){
     window.__firebase = {
       db, DB_DOC, getDoc, setDoc, onSnapshot,
-      disableNetwork, enableNetwork, waitForPendingWrites
+      disableNetwork, enableNetwork, waitForPendingWrites,
+      auth, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+      updatePassword, signOut, signInAnonymously
     };
     window.dispatchEvent(new Event('firebase-ready'));
   }
@@ -85,6 +91,9 @@
   onAuthStateChanged(auth, (user)=>{
     if(user){ markFirebaseReady(); }
   });
+  // Connexion anonyme initiale seulement pour permettre à l'app de démarrer
+  // et de lire les données avant que l'utilisateur ne se connecte
+  // nominativement via l'écran de login (voir loginWithAppCredentials).
   signInAnonymously(auth).catch((err)=>{
     console.warn('Authentification Firebase anonyme impossible : l\'app continue en mode local.', err);
     // Pas de window.__firebase => syncFirebaseInBackground() restera en
@@ -1257,14 +1266,21 @@ function seedDB(){
     });
   })();
 
+  // mustChangePassword:true force un changement de mot de passe à la première
+  // connexion (voir renderForceChangePassword). Les mots de passe ci-dessous
+  // ne sont que des valeurs temporaires de démarrage : comme ce fichier est
+  // public (dépôt Git, code source livré au client), TOUT mot de passe écrit
+  // ici en dur doit être considéré comme déjà compromis. La vraie protection
+  // vient du changement obligatoire, pas de la complexité du mot de passe
+  // temporaire choisi.
   const users = [
-    { id:'admin', nom:'Administrateur MPS', login:'admin', motdepasse:'admin123', role:'Administrateur', agenceId:null },
-    { id:'direction', nom:'Sény Condé (Direction)', login:'direction', motdepasse:'direction123', role:'Direction', agenceId:null },
-    { id:'agence_cky', nom:'Fatoumata Camara', login:'agence.cky', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-CKY' },
-    { id:'agence_mtt', nom:'Ibrahima Sory Bah', login:'agence.mtt', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-MTT' },
-    { id:'agence_rtm', nom:'Aïssatou Diallo', login:'agence.rtm', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-RTM' },
-    { id:'finance', nom:'Comptable MPS', login:'finance', motdepasse:'finance123', role:'Comptable', agenceId:null },
-    { id:'agent_pdv1', nom:'Agent PDV Madina', login:'agent.pdv1', motdepasse:'agent123', role:'Agent PDV', agenceId:'AG-CKY', pdvId:'PDV-001' },
+    { id:'admin', nom:'Administrateur MPS', login:'admin', motdepasse:'admin123', role:'Administrateur', agenceId:null, mustChangePassword:true },
+    { id:'direction', nom:'Sény Condé (Direction)', login:'direction', motdepasse:'direction123', role:'Direction', agenceId:null, mustChangePassword:true },
+    { id:'agence_cky', nom:'Fatoumata Camara', login:'agence.cky', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-CKY', mustChangePassword:true },
+    { id:'agence_mtt', nom:'Ibrahima Sory Bah', login:'agence.mtt', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-MTT', mustChangePassword:true },
+    { id:'agence_rtm', nom:'Aïssatou Diallo', login:'agence.rtm', motdepasse:'agence123', role:'Responsable Agence', agenceId:'AG-RTM', mustChangePassword:true },
+    { id:'finance', nom:'Comptable MPS', login:'finance', motdepasse:'finance123', role:'Comptable', agenceId:null, mustChangePassword:true },
+    { id:'agent_pdv1', nom:'Agent PDV Madina', login:'agent.pdv1', motdepasse:'agent123', role:'Agent PDV', agenceId:'AG-CKY', pdvId:'PDV-001', mustChangePassword:true },
   ];
 
   const activityLog = [
@@ -1274,7 +1290,7 @@ function seedDB(){
   ];
 
   return {
-    version:5,
+    version:4,
     settings:{ tauxCommissionDualWallet: 5.2, alerteFloatSeuil: 15000000, alerteRechargeSeuil: 5000, lastBackupDate: null },
     agences, pdvs, stockFloat, stockRecharge, commandes, transferts, conversions, ventes,
     creditOFMG, creditsClients, avances, retours, stockERechargeLivre, users, activityLog,
@@ -1293,7 +1309,7 @@ function emptyDB(){
   // n'existe plus (juste "sans portée visible", mais autant repartir propre).
   const users = seed.users.map(u=>({ ...u, agenceId:null, pdvId:undefined }));
   return {
-    version:5,
+    version:4,
     settings:{ tauxCommissionDualWallet: 5.2, alerteFloatSeuil: 15000000, alerteRechargeSeuil: 5000, lastBackupDate: null },
     agences: [], pdvs: [],
     stockFloat: { central: 0 }, stockRecharge: { central: 0 },
@@ -1311,6 +1327,33 @@ function emptyDB(){
 async function hashPassword(plain){
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('mps_salt_v1::'+plain));
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// Écrit le rôle de l'utilisateur dans un document Firestore séparé
+// (/mps_users/{uid}), distinct du gros blob applicatif (/mps/db). Les
+// règles Firestore lisent CE document pour savoir quel rôle a le
+// compte qui écrit, sans dépendre du contenu (potentiellement non encore
+// synchronisé) du document principal — évite toute dépendance circulaire
+// entre "peut lire son rôle" et "peut lire la base".
+async function syncUserRoleDoc(uid, appUser){
+  if(!window.__firebase || !window.__firebase.db) return;
+  try{
+    const { db, setDoc } = window.__firebase;
+    const { doc } = await import("https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js");
+    const roleDocRef = doc(db, 'mps_users', uid);
+    await setDoc(roleDocRef, {
+      login: appUser.login,
+      role: appUser.role,
+      agenceId: appUser.agenceId || null,
+      pdvId: appUser.pdvId || null,
+      updatedAt: nowISO(),
+    });
+  }catch(err){
+    console.warn('Synchronisation du rôle Firestore impossible :', err);
+    // Non bloquant : l'app continue avec les règles Firestore existantes
+    // (auth != null), simplement sans distinction fine par rôle tant que
+    // ce document n'est pas synchronisé.
+  }
 }
 
 // Redimensionne/compresse une image uploadée (photo de profil) en carré JPEG base64
@@ -1353,6 +1396,22 @@ async function migrateDB(){
       if(u.motdepasse && !u.passHash){ u.passHash = await hashPassword(u.motdepasse); delete u.motdepasse; changed = true; }
     }
     DB.version = 4; changed = true;
+  }
+  if(DB.version < 5){
+    // Force le changement de mot de passe pour les comptes qui utilisent
+    // encore un mot de passe par défaut connu (admin123, direction123,
+    // agence123, finance123, agent123). Un compte dont le mot de passe a déjà
+    // été personnalisé n'est pas concerné : on ne l'embête pas inutilement.
+    const defaultHashes = await Promise.all(
+      ['admin123','direction123','agence123','finance123','agent123'].map(hashPassword)
+    );
+    for(const u of DB.users){
+      if(u.mustChangePassword === undefined){
+        u.mustChangePassword = defaultHashes.includes(u.passHash);
+        changed = true;
+      }
+    }
+    DB.version = 5; changed = true;
   }
   if(changed){ saveDB(); }
 }
@@ -1548,6 +1607,33 @@ function renderLogin(){
       document.getElementById('loginError').textContent = 'Identifiant ou mot de passe incorrect.';
       return;
     }
+    // Connexion Firebase Auth nominative en plus de la vérification locale
+    // ci-dessus : le mot de passe local reste la source de vérité pour
+    // l'UI (déjà vérifié ci-dessus), mais Firebase doit aussi reconnaître
+    // CET utilisateur précis pour que les règles Firestore par rôle
+    // fonctionnent. Si le compte Firebase n'existe pas encore (première
+    // connexion après la migration), on le crée avec le même mot de passe.
+    if(window.__firebase && window.__firebase.auth){
+      const { auth, signInWithEmailAndPassword, createUserWithEmailAndPassword } = window.__firebase;
+      const technicalEmail = login + '@mps-app.local';
+      try{
+        const cred = await signInWithEmailAndPassword(auth, technicalEmail, pass);
+        await syncUserRoleDoc(cred.user.uid, user);
+      }catch(fbErr){
+        if(fbErr.code === 'auth/user-not-found' || fbErr.code === 'auth/invalid-credential'){
+          try{
+            const cred = await createUserWithEmailAndPassword(auth, technicalEmail, pass);
+            await syncUserRoleDoc(cred.user.uid, user);
+          }catch(createErr){
+            console.warn('Création du compte Firebase Auth impossible :', createErr);
+            // On continue quand même : l'app reste utilisable en mode
+            // local/anonyme, seule la synchronisation par rôle est dégradée.
+          }
+        } else {
+          console.warn('Connexion Firebase Auth nominative impossible :', fbErr);
+        }
+      }
+    }
     SESSION = { userId:user.id, since: nowISO() };
     saveSession();
     boot();
@@ -1556,6 +1642,9 @@ function renderLogin(){
 
 function doLogout(){
   clearSession();
+  if(window.__firebase && window.__firebase.signOut && window.__firebase.auth){
+    window.__firebase.signOut(window.__firebase.auth).catch(()=>{});
+  }
   document.getElementById('app').classList.remove('active');
   document.getElementById('loginScreen').style.display='flex';
   renderLogin();
@@ -1566,6 +1655,7 @@ function doLogout(){
    ========================================================= */
 const NAV_ITEMS = [
   { id:'dashboard', label:'Tableau de bord', ic:'dashboard', roles:'all' },
+  { id:'stock', label:'Gestion de Stock', ic:'float', roles:'all' },
   { sep:'ORANGE MONEY', section:'orange' },
   { id:'commandes', label:'Commandes OFMG', ic:'orders', roles:'all' },
   { id:'stockfloat', label:'Stock Float', ic:'float', roles:'all' },
@@ -1581,7 +1671,7 @@ const NAV_ITEMS = [
   { id:'ventes', label:'Ventes & Conso.', ic:'sales', roles:'all' },
   { id:'creditsclients', label:'Crédits Clients', ic:'creditNote', roles:['Administrateur','Direction','Comptable','Responsable Agence','Agent PDV'] },
   { id:'avances', label:'Avances', ic:'advance', roles:['Administrateur','Direction','Comptable','Responsable Agence','Agent PDV'] },
-  { id:'retours', label:'Retours', ic:'returns', roles:['Administrateur','Direction','Comptable','Responsable Agence','Agent PDV'] },
+  { id:'retours', label:'Ristournes', ic:'returns', roles:['Administrateur','Direction','Comptable','Responsable Agence','Agent PDV'] },
   { sep:'GESTION' },
   { id:'recapitulatif', label:'Récapitulatif', ic:'dashboard', roles:'all' },
   { id:'rapports', label:'Rapports', ic:'reports', roles:'all' },
@@ -1660,6 +1750,7 @@ function goTo(viewId){
 
 const VIEW_META = {
   dashboard:{ title:'Tableau de bord', crumb:"Vue d'ensemble temps réel" },
+  stock:{ title:'Gestion de Stock', crumb:'Solde Orange Money et Stock E‑Recharge — entrées et sorties' },
   commandes:{ title:'Commandes & Float OFMG', crumb:"Achat de float auprès d'OFMG" },
   stockfloat:{ title:'Stock Float — Orange Money', crumb:'Central · Agences · PDV' },
   stockrecharge:{ title:'Stock E‑Recharge — Réseau PDV', crumb:'Central · Agences · PDV' },
@@ -1671,7 +1762,7 @@ const VIEW_META = {
   ventes:{ title:'Ventes & Consommations', crumb:'Dépôts · Retraits · E‑Recharge' },
   creditsclients:{ title:'Crédits Clients', crumb:'Créances accordées aux clients' },
   avances:{ title:'Avances', crumb:'Avances déposées & remboursements' },
-  retours:{ title:'Retours', crumb:'Montants retournés & remboursements' },
+  retours:{ title:'Ristournes', crumb:'Bonus & remises accordés par les distributeurs' },
   credit:{ title:'Crédit Fournisseur OFMG', crumb:'Dette, paiements & échéances' },
   rapports:{ title:'Rapports', crumb:'Journalier · Hebdomadaire · Mensuel' },
   recapitulatif:{ title:'Récapitulatif', crumb:"Vue consolidée de toutes les données" },
@@ -1697,6 +1788,7 @@ function renderView(){
   const host = document.getElementById('viewsHost');
   const renderers = {
     dashboard: renderDashboardView,
+    stock: renderStockSimpleView,
     commandes: renderCommandesView,
     stockfloat: renderStockFloatView,
     stockrecharge: renderStockRechargeView,
@@ -1877,7 +1969,7 @@ function renderDashboardView(){
       <div class="kpi-grid" style="margin:0">
         <div class="kpi-card" style="min-height:112px"><div class="lbl">Stock E‑Recharge</div><div class="val" style="font-size:21px">${fmtNum(totalRecharge)} u.</div><div class="delta">${fmtGNF(totalRecharge)} équivalent</div></div>
         <div class="kpi-card" style="min-height:112px"><div class="lbl">Grossiste E‑Recharge</div><div class="val" style="font-size:21px">${fmtNum(soldeStockELivre.paquets)} paquets</div><div class="delta">${fmtGNF(soldeStockELivre.montant)}</div></div>
-        <div class="kpi-card" style="min-height:112px"><div class="lbl">Retours à rembourser</div><div class="val" style="font-size:21px">${fmtGNF(retoursEncours)}</div><div class="delta">${DB.retours.filter(r=>r.statut!=='Soldé').length} dossier(s)</div></div>
+        <div class="kpi-card" style="min-height:112px"><div class="lbl">Ristournes à recevoir</div><div class="val" style="font-size:21px">${fmtGNF(retoursEncours)}</div><div class="delta">${DB.retours.filter(r=>r.statut!=='Soldé').length} dossier(s)</div></div>
         <div class="kpi-card" style="min-height:112px"><div class="lbl">Avances actives</div><div class="val" style="font-size:21px">${fmtGNF(avStats.encours)}</div><div class="delta">${avStats.enCours} compte(s)</div></div>
       </div>
     </div>
@@ -2141,6 +2233,154 @@ function advanceCommande(cmdId){
 /* =========================================================
    VUE : STOCK FLOAT — ORANGE MONEY
    ========================================================= */
+/* =========================================================
+   VUE : GESTION DE STOCK (SIMPLE) — écran unique pour novices
+   Regroupe le Float (Orange Money) et l'E-Recharge en une seule
+   page, avec juste 2 boutons : Entrée / Sortie. Réutilise en
+   coulisses les mêmes fonctions que Transferts et Achat E-Livré,
+   sans changer les données ni les autres modules.
+   ========================================================= */
+function renderStockSimpleView(){
+  document.getElementById('topbarActions').innerHTML = '';
+  const host = document.getElementById('viewsHost');
+  const seuilF = DB.settings.alerteFloatSeuil;
+
+  const soldeFloat = scopedTotalFloat();
+  const soldeRecharge = scopedTotalRecharge();
+
+  // Historique combiné simple : achats E-Livré + transferts, triés du plus récent.
+  const mvtAchats = (DB.stockERechargeLivre||[]).filter(m=>m.type==='entree').map(m=>({
+    date:m.date, sens:'entree', libelle:`Achat E‑Recharge (Orange GN)`, montant:m.montant, unite:'GNF'
+  }));
+  const mvtTransferts = (DB.transferts||[]).filter(t=>t.statut==='Validé').map(t=>({
+    date:t.date, sens:'mouvement',
+    libelle:`${t.type==='float'?'Solde Orange Money':'E‑Recharge'} : ${nodeLabel(t.de)} → ${nodeLabel(t.vers)}`,
+    montant:t.montant, unite: t.type==='float' ? 'GNF' : 'unités'
+  }));
+  const historique = [...mvtAchats, ...mvtTransferts].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,20);
+
+  const nodesFloat = [
+    ...(isRole('Administrateur','Direction','Comptable') ? [{ id:'central', label:'Central (MPS)', val:DB.stockFloat.central||0 }] : []),
+    ...DB.agences.filter(a=>isInScopeAgence(a.id)).map(a=>({ id:a.id, label:a.nom, val:DB.stockFloat[a.id]||0 })),
+    ...DB.pdvs.filter(p=>isInScopePdv(p.id)).map(p=>({ id:p.id, label:'↳ '+p.nom, val:DB.stockFloat[p.id]||0 })),
+  ];
+  const nodesRecharge = [
+    ...(isRole('Administrateur','Direction','Comptable') ? [{ id:'central', label:'Central (MPS)', val:DB.stockRecharge.central||0 }] : []),
+    ...DB.agences.filter(a=>isInScopeAgence(a.id)).map(a=>({ id:a.id, label:a.nom, val:DB.stockRecharge[a.id]||0 })),
+    ...DB.pdvs.filter(p=>isInScopePdv(p.id)).map(p=>({ id:p.id, label:'↳ '+p.nom, val:DB.stockRecharge[p.id]||0 })),
+  ];
+
+  const nodeRows = (nodes, unite) => nodes.map(n=>`
+    <tr><td class="strong">${escapeHtml(n.label)}</td><td style="text-align:right">${unite==='GNF'?fmtGNF(n.val):fmtNum(n.val)+' '+unite}</td></tr>`).join('');
+
+  host.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card" style="--accent:var(--gold)"><div class="lbl"><span class="ic">${icon('float')}</span>Solde Orange Money (tout le réseau)</div><div class="val">${fmtGNF(soldeFloat)}</div></div>
+      <div class="kpi-card" style="--accent:var(--teal)"><div class="lbl"><span class="ic">${icon('recharge')}</span>Stock E‑Recharge (tout le réseau)</div><div class="val">${fmtNum(soldeRecharge)} unités</div></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Solde Orange Money</h3><div class="sub">Argent disponible pour les dépôts et retraits clients</div></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+        <button class="btn btn-gold" onclick="openStockSimpleMouvement('float','entree')">+ Entrée</button>
+        <button class="btn btn-outline" onclick="openStockSimpleMouvement('float','sortie')">− Sortie</button>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Point</th><th style="text-align:right">Solde</th></tr></thead>
+        <tbody>${nodeRows(nodesFloat,'GNF') || '<tr><td colspan="2" style="text-align:center;color:var(--text-dim)">Aucun point dans votre périmètre.</td></tr>'}</tbody></table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Stock E‑Recharge</h3><div class="sub">Crédit téléphonique disponible à la vente</div></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+        <button class="btn btn-gold" onclick="openStockSimpleMouvement('recharge','entree')">+ Entrée</button>
+        <button class="btn btn-outline" onclick="openStockSimpleMouvement('recharge','sortie')">− Sortie</button>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Point</th><th style="text-align:right">Solde</th></tr></thead>
+        <tbody>${nodeRows(nodesRecharge,'unités') || '<tr><td colspan="2" style="text-align:center;color:var(--text-dim)">Aucun point dans votre périmètre.</td></tr>'}</tbody></table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Derniers mouvements</h3><div class="sub">Entrées et sorties les plus récentes</div></div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Date</th><th>Mouvement</th><th style="text-align:right">Montant</th></tr></thead>
+        <tbody>${historique.length ? historique.map(m=>`
+          <tr><td style="white-space:nowrap">${fmtDateTime(m.date)}</td><td>${escapeHtml(m.libelle)}</td>
+          <td style="text-align:right">${m.unite==='GNF'?fmtGNF(m.montant):fmtNum(m.montant)+' '+m.unite}</td></tr>`).join('')
+          : '<tr><td colspan="3" style="text-align:center;color:var(--text-dim)">Aucun mouvement récent.</td></tr>'}</tbody></table>
+      </div>
+    </div>`;
+}
+
+// Entrée = ajouter du stock (achat / réception). Sortie = envoyer du stock
+// vers un autre point (agence, PDV) ou le sortir du réseau.
+function openStockSimpleMouvement(kind, sens){
+  const isFloat = kind==='float';
+  const unite = isFloat ? 'GNF' : 'unités';
+  const stockObj = isFloat ? DB.stockFloat : DB.stockRecharge;
+  const titre = (sens==='entree' ? 'Entrée — ' : 'Sortie — ') + (isFloat ? 'Solde Orange Money' : 'Stock E‑Recharge');
+  const nodes = allNodesForSelect(true);
+
+  if(sens==='entree' && !isRole('Administrateur','Direction','Comptable')){
+    toast("Vous n'avez pas l'autorisation d'enregistrer une entrée de stock.", 'error'); return;
+  }
+  if(sens==='sortie' && !isRole('Administrateur','Direction','Responsable Agence')){
+    toast("Vous n'avez pas l'autorisation d'enregistrer une sortie de stock.", 'error'); return;
+  }
+
+  openModal(`
+    <div class="modal-head"><h3>${titre}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p style="font-size:12.5px;color:var(--text-mid);margin-top:-8px">
+      ${sens==='entree'
+        ? `Ajoute du stock ${isFloat?'Orange Money':'e‑recharge'} sur le point choisi.`
+        : `Retire du stock d'un point pour l'envoyer vers un autre (ou le sortir du réseau).`}
+    </p>
+    <form id="stkSimpleForm">
+      <div class="form-grid">
+        ${sens==='sortie' ? `<div class="field full"><label>Depuis</label><select id="stkDe">${nodes.map(n=>`<option value="${n.id}">${escapeHtml(n.label)}</option>`).join('')}</select></div>` : ''}
+        <div class="field full"><label>${sens==='entree' ? 'Vers' : 'Destination'}</label><select id="stkVers">${nodes.map(n=>`<option value="${n.id}">${escapeHtml(n.label)}</option>`).join('')}</select></div>
+        <div class="field"><label>Montant (${unite})</label><input type="number" id="stkMontant" min="1" required></div>
+      </div>
+      <div class="login-error" id="stkError"></div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-outline" onclick="closeModal()">Annuler</button>
+        <button type="submit" class="btn btn-gold">Valider</button>
+      </div>
+    </form>`);
+
+  document.getElementById('stkSimpleForm').addEventListener('submit', e=>{
+    e.preventDefault();
+    const montant = parsePositiveAmount(document.getElementById('stkMontant').value);
+    const vers = document.getElementById('stkVers').value;
+    const err = document.getElementById('stkError');
+    if(montant===null){ err.textContent = 'Le montant doit être un nombre positif.'; return; }
+
+    if(sens==='entree'){
+      // Entrée directe sur le point choisi (équivalent simplifié d'un achat).
+      stockObj[vers] = (stockObj[vers]||0) + montant;
+      if(!isFloat && vers==='central'){
+        DB.stockERechargeLivre.push({ id: uid('SEL'), type:'entree', libelle:'Entrée de stock (saisie simple)', montant: montant*100000, paquets: montant/100, date: nowISO() });
+        stockELivreRecalculer();
+      }
+      logActivity(`Entrée de stock ${isFloat?'Orange Money':'e‑recharge'} sur ${nodeLabel(vers)} (${isFloat?fmtGNF(montant):fmtNum(montant)+' unités'})`);
+      saveDB(); closeModal(); renderStockSimpleView(); toast('Entrée enregistrée','success');
+    } else {
+      const de = document.getElementById('stkDe').value;
+      if(de===vers){ err.textContent = 'La source et la destination doivent être différentes.'; return; }
+      const solde = stockObj[de]||0;
+      if(solde < montant){ err.textContent = `Solde insuffisant sur ${nodeLabel(de)} (disponible : ${isFloat?fmtGNF(solde):fmtNum(solde)+' unités'}).`; return; }
+      stockObj[de] = solde - montant;
+      stockObj[vers] = (stockObj[vers]||0) + montant;
+      DB.transferts.unshift({ id: uid('TR'), type: isFloat?'float':'e-recharge', de, vers, montant, date: nowISO(), statut:'Validé', par: SESSION.userId });
+      logActivity(`Sortie de stock ${isFloat?'Orange Money':'e‑recharge'} : ${nodeLabel(de)} → ${nodeLabel(vers)} (${isFloat?fmtGNF(montant):fmtNum(montant)+' unités'})`);
+      saveDB(); closeModal(); renderStockSimpleView(); toast('Sortie enregistrée','success');
+    }
+  });
+}
+
 function renderStockFloatView(){
   document.getElementById('topbarActions').innerHTML = '';
   const host = document.getElementById('viewsHost');
@@ -2381,6 +2621,7 @@ function renderAgencesView(){
             <div><h3>${escapeHtml(a.nom)}</h3><div class="sub">${escapeHtml(a.localisation)} · Resp. ${escapeHtml(a.responsable)}</div></div>
             <div style="display:flex;align-items:center;gap:8px">
               <span class="pill pill-ok">${fmtGNF(DB.stockFloat[a.id]||0)}</span>
+              ${isRole('Administrateur','Direction','Responsable Agence') ? `<button class="btn btn-outline btn-sm" onclick="openTransfertModal('${a.id}')">↗ Transfert</button>` : ''}
               ${canManage ? `<button class="btn btn-outline btn-sm" onclick="openAgenceModal('${a.id}')">Modifier</button>
               <button class="btn btn-danger btn-sm" onclick="deleteAgence('${a.id}')">Suppr.</button>` : ''}
             </div>
@@ -2391,6 +2632,7 @@ function renderAgencesView(){
               <span>${escapeHtml(p.nom)} <span style="color:var(--text-dim)">· ${escapeHtml(p.contact)}</span></span>
               <span style="display:flex;align-items:center;gap:8px">
                 ${fmtGNF(DB.stockFloat[p.id]||0)}
+                ${isRole('Administrateur','Direction','Responsable Agence') ? `<button class="btn btn-outline btn-sm" onclick="openTransfertModal('${p.id}')">↗ Transfert</button>` : ''}
                 ${canManage ? `<button class="btn btn-outline btn-sm" onclick="openPdvModal('${p.id}')">Modifier</button>
                 <button class="btn btn-danger btn-sm" onclick="deletePdv('${p.id}')">Suppr.</button>` : ''}
               </span>
@@ -2552,7 +2794,7 @@ function renderComparatifAgencesView(){
     <div class="panel">
       <div class="panel-head">
         <h3>Tableau comparatif</h3>
-        <div class="sub">Crédits clients, avances et retours ne sont pas rattachés à une agence dans le modèle actuel — ils n'apparaissent pas ici.</div>
+        <div class="sub">Crédits clients, avances et ristournes distributeurs ne sont pas rattachés à une agence dans le modèle actuel — ils n'apparaissent pas ici.</div>
       </div>
       <div class="table-wrap">
         ${stats.length ? `
@@ -2635,7 +2877,7 @@ function renderTransfertsView(){
     </div>`;
 }
 
-function openTransfertModal(){
+function openTransfertModal(deId){
   // Garde-fou côté client : même si cette fonction est appelée directement
   // (ex. depuis la console), on refuse la création si le rôle n'est pas
   // autorisé. Rappel : ceci n'est PAS une sécurité réelle (l'utilisateur
@@ -2654,7 +2896,7 @@ function openTransfertModal(){
           <select id="trType"><option value="float">Float (GNF)</option><option value="e-recharge">E‑Recharge (unités)</option></select>
         </div>
         <div class="field"><label>Montant</label><input type="number" id="trMontant" min="1" required></div>
-        <div class="field"><label>De</label><select id="trDe">${nodes.map(n=>`<option value="${n.id}">${escapeHtml(n.label)}</option>`).join('')}</select></div>
+        <div class="field"><label>De</label><select id="trDe">${nodes.map(n=>`<option value="${n.id}" ${deId===n.id?'selected':''}>${escapeHtml(n.label)}</option>`).join('')}</select></div>
         <div class="field"><label>Vers</label><select id="trVers">${nodes.map(n=>`<option value="${n.id}">${escapeHtml(n.label)}</option>`).join('')}</select></div>
       </div>
       <div class="login-error" id="trError"></div>
@@ -3057,6 +3299,7 @@ function applyStockELivreFilters(list){
 }
 function renderStockELivreView(){
   document.getElementById('topbarActions').innerHTML = `
+    <button class="btn btn-outline" onclick="openStockELivreSortieModal()">↗ Sortie vers une agence</button>
     <button class="btn btn-gold" onclick="openStockELivreEntreeModal()">+ Achat E‑Recharge (Orange GN)</button>`;
   const host = document.getElementById('viewsHost');
   const allList = [...DB.stockERechargeLivre]; // ordre chronologique, solde couru
@@ -3133,14 +3376,55 @@ function drawStockELivreChart(list){
   });
 }
 
+function openStockELivreSortieModal(){
+  if(!isRole('Administrateur','Direction')){
+    toast("Vous n'avez pas l'autorisation d'effectuer une sortie de stock central.", 'error');
+    return;
+  }
+  const agences = DB.agences.filter(a=>isInScopeAgence(a.id));
+  if(!agences.length){ toast('Aucune agence disponible.', 'error'); return; }
+  const stockCentral = DB.stockRecharge.central||0;
+  openModal(`
+    <div class="modal-head"><h3>Sortie E‑Recharge vers une agence</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p style="font-size:12.5px;color:var(--text-mid);margin-top:-8px">Décrémente le <b style="color:var(--text-hi)">Stock Central</b> (actuellement ${fmtNum(stockCentral)} unités) et crédite l'agence choisie. Équivalent à un transfert e-recharge Central → Agence.</p>
+    <form id="selSortieForm">
+      <div class="form-grid">
+        <div class="field full"><label>Agence destinataire</label>
+          <select id="selSortieAgence">${agences.map(a=>`<option value="${a.id}">${escapeHtml(a.nom)}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Montant (unités)</label><input type="number" id="selSortieMontant" min="1" max="${stockCentral}" required></div>
+      </div>
+      <div class="login-error" id="selSortieError"></div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-outline" onclick="closeModal()">Annuler</button>
+        <button type="submit" class="btn btn-gold">Valider la sortie</button>
+      </div>
+    </form>`);
+  document.getElementById('selSortieForm').addEventListener('submit', e=>{
+    e.preventDefault();
+    const agenceId = document.getElementById('selSortieAgence').value;
+    const montant = parsePositiveAmount(document.getElementById('selSortieMontant').value);
+    const err = document.getElementById('selSortieError');
+    if(montant===null){ err.textContent = 'Le montant doit être un nombre positif.'; return; }
+    const solde = DB.stockRecharge.central||0;
+    if(solde < montant){ err.textContent = `Stock Central insuffisant (disponible : ${fmtNum(solde)} unités).`; return; }
+    DB.stockRecharge.central = solde - montant;
+    DB.stockRecharge[agenceId] = (DB.stockRecharge[agenceId]||0) + montant;
+    const tr = { id: uid('TR'), type:'e-recharge', de:'central', vers:agenceId, montant, date: nowISO(), statut:'Validé', par: SESSION.userId };
+    DB.transferts.unshift(tr);
+    logActivity(`Sortie e-recharge Central → ${agenceName(agenceId)} (${fmtNum(montant)} unités)`);
+    saveDB(); closeModal(); renderStockELivreView(); toast('Sortie enregistrée et stock central mis à jour','success');
+  });
+}
+
 function openStockELivreEntreeModal(){
   openModal(`
     <div class="modal-head"><h3>Achat E‑Recharge auprès d'Orange GN</h3><button class="modal-close" onclick="closeModal()">×</button></div>
     <p style="font-size:12.5px;color:var(--text-mid);margin-top:-8px">Cet achat alimentera automatiquement le <b style="color:var(--text-hi)">Stock Central</b>, prêt à être distribué vers les agences puis les PDV.</p>
     <form id="selEntreeForm">
       <div class="form-grid">
-        <div class="field"><label>Montant (GNF)</label><input type="number" id="selEntreeMontant" min="100000" step="100000" required></div>
-        <div class="field"><label>Paquets (auto)</label><input type="number" id="selEntreePaquets" readonly style="opacity:.6"></div>
+        <div class="field"><label>Paquets</label><input type="number" id="selEntreePaquets" min="1" step="1" required></div>
+        <div class="field"><label>Montant (GNF, auto)</label><input type="number" id="selEntreeMontant" readonly style="opacity:.6"></div>
         <div class="field full"><label>Libellé</label>
           <select id="selEntreeLibelleSelect">
             <option value="Achat Orange GN" selected>Achat Orange GN</option>
@@ -3158,7 +3442,7 @@ function openStockELivreEntreeModal(){
       </div>
     </form>`);
   const mEl = document.getElementById('selEntreeMontant'), pEl = document.getElementById('selEntreePaquets');
-  mEl.addEventListener('input', ()=>{ pEl.value = Math.round((Number(mEl.value)||0)/100000); });
+  pEl.addEventListener('input', ()=>{ mEl.value = Math.round((Number(pEl.value)||0)*100000); });
   const libSelEl = document.getElementById('selEntreeLibelleSelect'), libAutreWrap = document.getElementById('selEntreeLibelleAutreWrap'), libAutreEl = document.getElementById('selEntreeLibelleAutre');
   libSelEl.addEventListener('change', ()=>{
     const isAutre = libSelEl.value === '__autre';
@@ -3167,9 +3451,9 @@ function openStockELivreEntreeModal(){
   });
   document.getElementById('selEntreeForm').addEventListener('submit', e=>{
     e.preventDefault();
-    const montant = parsePositiveAmount(mEl.value);
-    if(montant===null){ toast('Le montant doit être un nombre positif.','error'); return; }
-    const paquets = Math.round(montant/100000);
+    const paquets = parsePositiveAmount(pEl.value);
+    if(paquets===null || !Number.isInteger(paquets)){ toast('Le nombre de paquets doit être un entier positif.','error'); return; }
+    const montant = paquets*100000;
     const libelle = libSelEl.value === '__autre' ? libAutreEl.value.trim() : libSelEl.value;
     if(!libelle){ toast('Veuillez préciser le libellé.','error'); return; }
     DB.stockERechargeLivre.push({ id: uid('SEL'), date: document.getElementById('selEntreeDate').value, type:'entree',
@@ -3187,6 +3471,20 @@ function openStockELivreEntreeModal(){
 /* =========================================================
    VUE : CRÉDITS CLIENTS
    ========================================================= */
+// Numéros clients déjà connus (croisés sur crédits et avances) —
+// utilisé pour proposer une liste de suggestion et éviter les fautes de
+// frappe sur un client déjà existant, sans empêcher la saisie d'un nouveau.
+function knownClients(){
+  const set = new Map();
+  (DB.creditsClients||[]).forEach(c=>{ if(c.client) set.set(c.client, c.nom&&c.nom!=='—'?c.nom:''); });
+  (DB.avances||[]).forEach(a=>{ if(a.client && a.client!=='—') set.set(a.client, set.get(a.client)||''); });
+  return [...set.entries()].map(([client,nom])=>({client,nom}));
+}
+function clientsDatalist(idAttr){
+  const list = knownClients();
+  return `<datalist id="${idAttr}">${list.map(c=>`<option value="${escapeHtml(c.client)}">${c.nom?escapeHtml(c.nom):''}</option>`).join('')}</datalist>`;
+}
+
 function creditsClientsStats(list){
   list = list || DB.creditsClients;
   const encours = list.reduce((s,c)=>s+(c.montant - c.montantPaye),0);
@@ -3252,7 +3550,7 @@ function openCreditClientModal(id){
     <div class="modal-head"><h3>${existing?'Modifier le crédit client':'Nouveau crédit client'}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
     <form id="ccForm">
       <div class="form-grid">
-        <div class="field"><label>N° client</label><input type="text" id="ccClient" placeholder="ex. 621950000" value="${existing?escapeHtml(existing.client):''}" required></div>
+        <div class="field"><label>N° client</label><input type="text" id="ccClient" list="ccClientList" placeholder="ex. 621950000" value="${existing?escapeHtml(existing.client):''}" required>${clientsDatalist('ccClientList')}</div>
         <div class="field"><label>Nom (optionnel)</label><input type="text" id="ccNom" placeholder="ex. Camara Amadou" value="${existing&&existing.nom!=='—'?escapeHtml(existing.nom):''}"></div>
         <div class="field"><label>Montant du crédit (GNF)</label><input type="number" id="ccMontant" min="${existing?existing.montantPaye:1}" value="${existing?existing.montant:''}" required></div>
         <div class="field"><label>Date</label><input type="date" id="ccDate" value="${existing?existing.date:todayISO()}" required></div>
@@ -3393,7 +3691,7 @@ function openAvanceModal(id){
     <form id="avForm">
       <div class="form-grid">
         <div class="field"><label>Nom du déposant</label><input type="text" id="avDeposant" value="${existing?escapeHtml(existing.deposant):''}" required></div>
-        <div class="field"><label>N° client (optionnel)</label><input type="text" id="avClient" placeholder="ex. 611083569" value="${existing&&existing.client!=='—'?escapeHtml(existing.client):''}"></div>
+        <div class="field"><label>N° client (optionnel)</label><input type="text" id="avClient" list="avClientList" placeholder="ex. 611083569" value="${existing&&existing.client!=='—'?escapeHtml(existing.client):''}">${clientsDatalist('avClientList')}</div>
         <div class="field"><label>Montant déposé (GNF)</label><input type="number" id="avMontant" min="${existing?existing.montantRembourse:1}" value="${existing?existing.montant:''}" required></div>
         <div class="field"><label>Date</label><input type="date" id="avDate" value="${existing?existing.date:todayISO()}" required></div>
       </div>
@@ -3470,7 +3768,7 @@ function openAvanceRemboursementModal(id){
    ========================================================= */
 let retoursFilters = { dateDebut:'', dateFin:'' };
 function renderRetoursView(){
-  document.getElementById('topbarActions').innerHTML = `<button class="btn btn-gold" onclick="openRetourModal()">+ Nouveau retour</button>`;
+  document.getElementById('topbarActions').innerHTML = `<button class="btn btn-gold" onclick="openRetourModal()">+ Nouvelle ristourne</button>`;
   const host = document.getElementById('viewsHost');
   let list = [...DB.retours];
   if(retoursFilters.dateDebut || retoursFilters.dateFin) list = list.filter(r=>inDateRange(r.date, retoursFilters.dateDebut, retoursFilters.dateFin));
@@ -3479,14 +3777,14 @@ function renderRetoursView(){
   const totalRetourne = list.reduce((s,r)=>s+r.montant,0);
   host.innerHTML = `
     <div class="kpi-grid">
-      <div class="kpi-card" style="--accent:var(--gold)"><div class="lbl"><span class="ic">${icon('returns')}</span>Encours non remboursé</div><div class="val">${fmtGNF(encours)}</div></div>
-      <div class="kpi-card" style="--accent:var(--teal)"><div class="lbl"><span class="ic">${icon('orders')}</span>Total retourné</div><div class="val">${fmtGNF(totalRetourne)}</div></div>
-      <div class="kpi-card" style="--accent:var(--orange)"><div class="lbl"><span class="ic">${icon('returns')}</span>Retours en cours</div><div class="val">${fmtNum(list.filter(r=>r.statut!=='Soldé').length)}</div></div>
-      <div class="kpi-card" style="--accent:var(--red)"><div class="lbl"><span class="ic">${icon('warning')}</span>Total retours</div><div class="val">${fmtNum(list.length)}</div></div>
+      <div class="kpi-card" style="--accent:var(--gold)"><div class="lbl"><span class="ic">${icon('returns')}</span>Encours non reçu</div><div class="val">${fmtGNF(encours)}</div></div>
+      <div class="kpi-card" style="--accent:var(--teal)"><div class="lbl"><span class="ic">${icon('orders')}</span>Total ristourné</div><div class="val">${fmtGNF(totalRetourne)}</div></div>
+      <div class="kpi-card" style="--accent:var(--orange)"><div class="lbl"><span class="ic">${icon('returns')}</span>Ristournes en cours</div><div class="val">${fmtNum(list.filter(r=>r.statut!=='Soldé').length)}</div></div>
+      <div class="kpi-card" style="--accent:var(--red)"><div class="lbl"><span class="ic">${icon('warning')}</span>Total ristournes</div><div class="val">${fmtNum(list.length)}</div></div>
     </div>
     <div class="panel">
       <div class="panel-head">
-        <h3>Retours</h3>
+        <h3>Ristournes</h3>
         <div class="chip-select">
           ${dateRangeFilterHtml(retoursFilters.dateDebut, retoursFilters.dateFin,
             "retoursFilters.dateDebut=this.value; renderRetoursView()",
@@ -3497,7 +3795,7 @@ function renderRetoursView(){
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Date</th><th>Client</th><th>Montant retourné</th><th>Remboursé</th><th>Reste</th><th>Statut</th><th></th></tr></thead>
+          <thead><tr><th>Date</th><th>Distributeur</th><th>Montant ristourné</th><th>Reçu</th><th>Reste</th><th>Statut</th><th></th></tr></thead>
           <tbody>${list.map(r=>{
             const reste = r.montant - r.montantRembourse;
             return `<tr>
@@ -3508,7 +3806,7 @@ function renderRetoursView(){
               <td style="color:${reste>0?'var(--red)':'var(--text-dim)'}">${fmtGNF(reste)}</td>
               <td><span class="pill ${r.statut==='Soldé'?'pill-ok':'pill-warn'}">${escapeHtml(r.statut)}</span></td>
               <td style="white-space:nowrap">
-                ${reste>0?`<button class="btn btn-teal btn-sm" onclick="openRetourRemboursementModal('${r.id}')">Rembourser</button>`:''}
+                ${reste>0?`<button class="btn btn-teal btn-sm" onclick="openRetourRemboursementModal('${r.id}')">Encaisser</button>`:''}
                 <button class="btn btn-outline btn-sm" onclick="openRetourModal('${r.id}')">Modifier</button>
                 <button class="btn btn-danger btn-sm" onclick="deleteRetour('${r.id}')">Suppr.</button>
               </td>
@@ -3521,12 +3819,15 @@ function renderRetoursView(){
 
 function openRetourModal(id){
   const existing = id ? DB.retours.find(r=>r.id===id) : null;
+  const distributeursConnus = ['Orange GN', 'OFMG'];
   openModal(`
-    <div class="modal-head"><h3>${existing?'Modifier le retour':'Nouveau retour'}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="modal-head"><h3>${existing?'Modifier la ristourne':'Nouvelle ristourne'}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
     <form id="rtForm">
       <div class="form-grid">
-        <div class="field"><label>N° client</label><input type="text" id="rtClient" placeholder="ex. 628792466" value="${existing?escapeHtml(existing.client):''}" required></div>
-        <div class="field"><label>Montant retourné (GNF)</label><input type="number" id="rtMontant" min="${existing?existing.montantRembourse:1}" value="${existing?existing.montant:''}" required></div>
+        <div class="field"><label>Distributeur</label><input type="text" id="rtClient" list="rtDistribList" placeholder="ex. Orange GN" value="${existing?escapeHtml(existing.client):''}" required>
+          <datalist id="rtDistribList">${distributeursConnus.map(d=>`<option value="${escapeHtml(d)}">`).join('')}</datalist>
+        </div>
+        <div class="field"><label>Montant ristourné (GNF)</label><input type="number" id="rtMontant" min="${existing?existing.montantRembourse:1}" value="${existing?existing.montant:''}" required></div>
         <div class="field full"><label>Date</label><input type="date" id="rtDate" value="${existing?existing.date:todayISO()}" required></div>
       </div>
       <div class="login-error" id="rtError"></div>
@@ -3541,17 +3842,17 @@ function openRetourModal(id){
     const errEl = document.getElementById('rtError');
     if(montant===null){ errEl.textContent = 'Le montant doit être un nombre positif.'; return; }
     if(existing){
-      if(montant < existing.montantRembourse){ errEl.textContent = `Le montant ne peut pas être inférieur au montant déjà remboursé (${fmtGNF(existing.montantRembourse)}).`; return; }
+      if(montant < existing.montantRembourse){ errEl.textContent = `Le montant ne peut pas être inférieur au montant déjà reçu (${fmtGNF(existing.montantRembourse)}).`; return; }
       existing.client = document.getElementById('rtClient').value.trim();
       existing.montant = montant; existing.date = document.getElementById('rtDate').value;
       existing.statut = existing.montantRembourse >= existing.montant ? 'Soldé' : 'En cours';
-      logActivity(`Retour modifié : ${fmtGNF(montant)} (${existing.client})`);
-      saveDB(); closeModal(); renderRetoursView(); toast('Retour mis à jour','success');
+      logActivity(`Ristourne modifiée : ${fmtGNF(montant)} (${existing.client})`);
+      saveDB(); closeModal(); renderRetoursView(); toast('Ristourne mise à jour','success');
     } else {
       DB.retours.unshift({ id: uid('RT'), client: document.getElementById('rtClient').value.trim(),
         montant, montantRembourse: 0, date: document.getElementById('rtDate').value, statut:'En cours' });
-      logActivity(`Retour enregistré : ${fmtGNF(montant)}`);
-      saveDB(); closeModal(); renderRetoursView(); toast('Retour enregistré','success');
+      logActivity(`Ristourne enregistrée : ${fmtGNF(montant)}`);
+      saveDB(); closeModal(); renderRetoursView(); toast('Ristourne enregistrée','success');
     }
   });
 }
@@ -3559,10 +3860,10 @@ function openRetourModal(id){
 function deleteRetour(id){
   const r = DB.retours.find(x=>x.id===id);
   if(!r) return;
-  if(!confirm(`Supprimer le retour de ${r.client} (${fmtGNF(r.montant)}) ? Cette action est irréversible.`)) return;
+  if(!confirm(`Supprimer la ristourne de ${r.client} (${fmtGNF(r.montant)}) ? Cette action est irréversible.`)) return;
   DB.retours = DB.retours.filter(x=>x.id!==id);
-  logActivity(`Retour supprimé : ${r.client} (${fmtGNF(r.montant)})`);
-  saveDB(); renderRetoursView(); toast('Retour supprimé','success');
+  logActivity(`Ristourne supprimée : ${r.client} (${fmtGNF(r.montant)})`);
+  saveDB(); renderRetoursView(); toast('Ristourne supprimée','success');
 }
 
 function openRetourRemboursementModal(id){
@@ -3570,16 +3871,16 @@ function openRetourRemboursementModal(id){
   if(!r) return;
   const reste = r.montant - r.montantRembourse;
   openModal(`
-    <div class="modal-head"><h3>Rembourser le retour</h3><button class="modal-close" onclick="closeModal()">×</button></div>
-    <p style="font-size:12.5px;color:var(--text-mid);margin-top:-8px">Client ${escapeHtml(r.client)} — reste à rembourser : <b style="color:var(--text-hi)">${fmtGNF(reste)}</b></p>
+    <div class="modal-head"><h3>Encaisser la ristourne</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p style="font-size:12.5px;color:var(--text-mid);margin-top:-8px">Distributeur ${escapeHtml(r.client)} — reste à recevoir : <b style="color:var(--text-hi)">${fmtGNF(reste)}</b></p>
     <form id="rtPayForm">
       <div class="form-grid">
-        <div class="field full"><label>Montant remboursé (GNF)</label><input type="number" id="rtPayMontant" min="1" max="${reste}" value="${reste}" required></div>
+        <div class="field full"><label>Montant reçu (GNF)</label><input type="number" id="rtPayMontant" min="1" max="${reste}" value="${reste}" required></div>
       </div>
       <div class="login-error" id="rtPayError"></div>
       <div class="modal-foot">
         <button type="button" class="btn btn-outline" onclick="closeModal()">Annuler</button>
-        <button type="submit" class="btn btn-gold">Rembourser</button>
+        <button type="submit" class="btn btn-gold">Encaisser</button>
       </div>
     </form>`);
   document.getElementById('rtPayForm').addEventListener('submit', e=>{
@@ -3587,11 +3888,11 @@ function openRetourRemboursementModal(id){
     const montant = parsePositiveAmount(document.getElementById('rtPayMontant').value);
     const errEl = document.getElementById('rtPayError');
     if(montant===null){ errEl.textContent = 'Le montant doit être un nombre positif.'; return; }
-    if(montant > reste){ errEl.textContent = 'Le montant dépasse le reste à rembourser.'; return; }
+    if(montant > reste){ errEl.textContent = 'Le montant dépasse le reste à recevoir.'; return; }
     r.montantRembourse += montant;
     if(r.montantRembourse >= r.montant) r.statut = 'Soldé';
-    logActivity(`Remboursement retour : ${fmtGNF(montant)} (${r.client})`);
-    saveDB(); closeModal(); renderRetoursView(); toast('Remboursement enregistré','success');
+    logActivity(`Ristourne encaissée : ${fmtGNF(montant)} (${r.client})`);
+    saveDB(); closeModal(); renderRetoursView(); toast('Encaissement enregistré','success');
   });
 }
 
@@ -4370,13 +4671,16 @@ function openUserModal(id){
     if(role==='Agent PDV' && !pdvId){ document.getElementById('userError').textContent = "Sélectionnez le PDV de rattachement (aucun PDV disponible dans cette agence)."; return; }
     if(existing){
       existing.nom = nom; existing.login = login; existing.photo = pendingPhoto;
-      if(passRaw){ existing.passHash = await hashPassword(passRaw); }
+      // Si l'admin définit un nouveau mot de passe pour ce compte, l'utilisateur
+      // devra le changer à sa prochaine connexion (il ne doit pas rester sur
+      // un mot de passe choisi par quelqu'un d'autre).
+      if(passRaw){ existing.passHash = await hashPassword(passRaw); existing.mustChangePassword = true; }
       if(existing.id!=='admin'){ existing.role = role; existing.agenceId = agenceId; existing.pdvId = pdvId; }
       logActivity(`Utilisateur modifié : ${nom}`);
       saveDB(); closeModal(); renderUtilisateursView(); renderSidebar(); toast('Utilisateur mis à jour','success');
     } else {
       const passHash = await hashPassword(passRaw);
-      DB.users.push({ id: uid('U'), nom, login, passHash, role, agenceId, pdvId, photo: pendingPhoto });
+      DB.users.push({ id: uid('U'), nom, login, passHash, role, agenceId, pdvId, photo: pendingPhoto, mustChangePassword:true });
       logActivity(`Utilisateur créé : ${nom} (${role})`);
       saveDB(); closeModal(); renderUtilisateursView(); toast('Utilisateur créé','success');
     }
@@ -4431,7 +4735,7 @@ function renderParametresView(){
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <button class="btn btn-teal" onclick="exportFullBackup()">Exporter toutes les données (JSON)</button>
-        <button class="btn btn-danger" onclick="resetDemoData()">↺ Remettre à zéro toutes les données démo</button>
+        <button class="btn btn-danger" onclick="resetDemoData()">Remettre toutes les données à zéro</button>
         <button class="btn btn-danger" onclick="resetAllToEmpty()">Vider toutes les données (démarrage à blanc)</button>
       </div>
     </div>`;
@@ -4462,7 +4766,7 @@ function exportFullBackup(){
   renderView();
 }
 async function resetDemoData(){
-  if(!confirm('Remettre à zéro TOUTES les données de démonstration (agences, PDV, stocks, ventes, transferts, commandes, crédits, activités, etc.) ? Les comptes utilisateurs seront conservés. Cette action est irréversible.')) return;
+  if(!confirm('Supprimer toutes les données de démonstration et repartir à zéro ? Les comptes utilisateurs seront conservés. Cette action est irréversible.')) return;
   if(prompt('Pour confirmer cette action irréversible, tapez RESET en majuscules :') !== 'RESET'){
     toast('Réinitialisation annulée.','error');
     return;
@@ -4538,6 +4842,13 @@ async function boot(){
   if(sessionUser){
     document.getElementById('loginScreen').style.display='none';
     document.getElementById('app').classList.add('active');
+    if(sessionUser.mustChangePassword){
+      // Bloque l'accès au reste de l'app tant que le mot de passe temporaire
+      // n'a pas été changé. On ne montre pas la barre latérale ni les vues :
+      // c'est un écran plein qui remplace tout, sans échappatoire.
+      renderForceChangePassword(sessionUser);
+      return;
+    }
     currentView = 'dashboard';
     renderSidebar();
     renderView();
@@ -4548,6 +4859,44 @@ async function boot(){
   }
 }
 boot();
+
+/* =========================================================
+   CHANGEMENT DE MOT DE PASSE OBLIGATOIRE (première connexion)
+   ========================================================= */
+function renderForceChangePassword(user){
+  const host = document.getElementById('viewsHost');
+  document.getElementById('sidebar').innerHTML = '';
+  document.getElementById('topbarActions').innerHTML = '';
+  document.getElementById('viewTitle').textContent = 'Changement de mot de passe requis';
+  document.getElementById('viewBreadcrumb').textContent = 'Sécurité du compte';
+  host.innerHTML = `
+    <div class="panel" style="max-width:420px;margin:40px auto">
+      <div class="panel-head"><h3>Bonjour ${escapeHtml(user.nom)}</h3><div class="sub">Pour des raisons de sécurité, vous devez définir un nouveau mot de passe avant de continuer. Le mot de passe temporaire fourni ne doit pas rester en usage.</div></div>
+      <form id="forceChangeForm" style="display:flex;flex-direction:column;gap:14px;margin-top:14px">
+        <div class="field"><label>Nouveau mot de passe</label><input type="password" id="fcNewPass" autocomplete="new-password" minlength="6" required></div>
+        <div class="field"><label>Confirmer le nouveau mot de passe</label><input type="password" id="fcNewPass2" autocomplete="new-password" minlength="6" required></div>
+        <div class="login-error" id="fcError"></div>
+        <button type="submit" class="btn btn-gold">Définir le mot de passe et continuer</button>
+      </form>
+      <button class="logout-btn" style="margin-top:14px" onclick="doLogout()">Se déconnecter</button>
+    </div>`;
+  document.getElementById('forceChangeForm').addEventListener('submit', async e=>{
+    e.preventDefault();
+    const p1 = document.getElementById('fcNewPass').value;
+    const p2 = document.getElementById('fcNewPass2').value;
+    const err = document.getElementById('fcError');
+    if(p1.length < 6){ err.textContent = 'Le mot de passe doit contenir au moins 6 caractères.'; return; }
+    if(p1 !== p2){ err.textContent = 'Les deux mots de passe ne correspondent pas.'; return; }
+    user.passHash = await hashPassword(p1);
+    user.mustChangePassword = false;
+    logActivity(`Mot de passe changé (première connexion) : ${user.nom}`);
+    saveDB();
+    toast('Mot de passe mis à jour.', 'success');
+    currentView = 'dashboard';
+    renderSidebar();
+    renderView();
+  });
+}
 
 // Register service worker for offline/installable PWA support.
 if('serviceWorker' in navigator){
