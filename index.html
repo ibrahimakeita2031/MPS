@@ -4690,6 +4690,18 @@ function openUserModal(id){
       // Si l'admin définit un nouveau mot de passe pour ce compte, l'utilisateur
       // devra le changer à sa prochaine connexion (il ne doit pas rester sur
       // un mot de passe choisi par quelqu'un d'autre).
+      // ATTENTION LIMITATION CONNUE : ceci ne met à jour QUE le mot de passe
+      // local (passHash). Le compte Firebase Auth de cet utilisateur garde
+      // son ANCIEN mot de passe, car changer le mot de passe d'un tiers
+      // exige Firebase Admin SDK côté serveur (absent de cette app 100%
+      // client). Concrètement : au prochain login de cet utilisateur avec
+      // le nouveau mot de passe, la connexion locale réussira mais la
+      // connexion Firebase échouera (repli automatique en mode dégradé,
+      // voir loginWithAppCredentials) — l'app reste utilisable, seule la
+      // synchronisation par rôle Firestore est temporairement dégradée.
+      // L'écran "changement de mot de passe obligatoire" (mustChangePassword)
+      // que l'utilisateur verra ensuite corrige les DEUX mots de passe à la
+      // fois — voir renderForceChangePassword.
       if(passRaw){ existing.passHash = await hashPassword(passRaw); existing.mustChangePassword = true; }
       if(existing.id!=='admin'){ existing.role = role; existing.agenceId = agenceId; existing.pdvId = pdvId; }
       logActivity(`Utilisateur modifié : ${nom}`);
@@ -4905,6 +4917,33 @@ function renderForceChangePassword(user){
     if(p1 !== p2){ err.textContent = 'Les deux mots de passe ne correspondent pas.'; return; }
     user.passHash = await hashPassword(p1);
     user.mustChangePassword = false;
+    // Synchronise aussi le mot de passe Firebase Auth de CE compte (celui
+    // actuellement connecté — updatePassword ne fonctionne que pour soi-même).
+    // Si le compte Firebase courant est encore anonyme (auth nominative pas
+    // encore établie, ex. ancien mot de passe jamais utilisé pour se
+    // connecter à Firebase), on retente une connexion nominative complète
+    // avec le nouveau mot de passe, quitte à créer le compte au besoin.
+    if(window.__firebase && window.__firebase.auth){
+      const { auth, updatePassword, signInWithEmailAndPassword, createUserWithEmailAndPassword } = window.__firebase;
+      const technicalEmail = user.login.toLowerCase() + '@mps-app.local';
+      try{
+        if(auth.currentUser && !auth.currentUser.isAnonymous){
+          await updatePassword(auth.currentUser, p1);
+          await syncUserRoleDoc(auth.currentUser.uid, user);
+        } else {
+          try{
+            const cred = await signInWithEmailAndPassword(auth, technicalEmail, p1);
+            await syncUserRoleDoc(cred.user.uid, user);
+          }catch(_){
+            const cred = await createUserWithEmailAndPassword(auth, technicalEmail, p1);
+            await syncUserRoleDoc(cred.user.uid, user);
+          }
+        }
+      }catch(fbErr){
+        console.warn('Synchronisation Firebase Auth du nouveau mot de passe impossible :', fbErr);
+        // Non bloquant : le changement local a réussi, l'app reste utilisable.
+      }
+    }
     logActivity(`Mot de passe changé (première connexion) : ${user.nom}`);
     saveDB();
     toast('Mot de passe mis à jour.', 'success');
