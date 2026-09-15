@@ -1669,6 +1669,7 @@ const NAV_ITEMS = [
   { id:'transferts', label:'Transferts', ic:'transfer', roles:'all' },
   { id:'dualwallet', label:'Dual Wallet', ic:'swap', roles:'all' },
   { id:'ventes', label:'Ventes & Conso.', ic:'sales', roles:'all' },
+  { id:'operations', label:'Opérations (Crédit/Avance/Ristourne)', ic:'creditNote', roles:['Administrateur','Direction','Comptable','Responsable Agence','Agent PDV'] },
   { id:'creditsclients', label:'Crédits Clients', ic:'creditNote', roles:['Administrateur','Direction','Comptable','Responsable Agence','Agent PDV'] },
   { id:'avances', label:'Avances', ic:'advance', roles:['Administrateur','Direction','Comptable','Responsable Agence','Agent PDV'] },
   { id:'retours', label:'Ristournes', ic:'returns', roles:['Administrateur','Direction','Comptable','Responsable Agence','Agent PDV'] },
@@ -1760,6 +1761,7 @@ const VIEW_META = {
   transferts:{ title:'Transferts', crumb:'Central → Agence → PDV' },
   dualwallet:{ title:'Dual Wallet', crumb:'Conversion Float → E‑Recharge' },
   ventes:{ title:'Ventes & Consommations', crumb:'Dépôts · Retraits · E‑Recharge' },
+  operations:{ title:'Opérations', crumb:'Crédits clients, avances et ristournes en un seul endroit' },
   creditsclients:{ title:'Crédits Clients', crumb:'Créances accordées aux clients' },
   avances:{ title:'Avances', crumb:'Avances déposées & remboursements' },
   retours:{ title:'Ristournes', crumb:'Bonus & remises accordés par les distributeurs' },
@@ -1798,6 +1800,7 @@ function renderView(){
     transferts: renderTransfertsView,
     dualwallet: renderDualWalletView,
     ventes: renderVentesView,
+    operations: renderOperationsView,
     creditsclients: renderCreditsClientsView,
     avances: renderAvancesView,
     retours: renderRetoursView,
@@ -2271,12 +2274,12 @@ function renderStockSimpleView(){
   ];
 
   const nodeRows = (nodes, unite) => nodes.map(n=>`
-    <tr><td class="strong">${escapeHtml(n.label)}</td><td style="text-align:right">${unite==='GNF'?fmtGNF(n.val):fmtNum(n.val)+' '+unite}</td></tr>`).join('');
+    <tr><td class="strong">${escapeHtml(n.label)}</td><td style="text-align:right">${unite==='GNF'?fmtGNF(n.val):fmtNum(n.val)+' '+unite+`<div style="font-size:10.5px;color:var(--text-dim)">≈ ${fmtGNF(n.val*1000)}</div>`}</td></tr>`).join('');
 
   host.innerHTML = `
     <div class="kpi-grid">
       <div class="kpi-card" style="--accent:var(--gold)"><div class="lbl"><span class="ic">${icon('float')}</span>Solde Orange Money (tout le réseau)</div><div class="val">${fmtGNF(soldeFloat)}</div></div>
-      <div class="kpi-card" style="--accent:var(--teal)"><div class="lbl"><span class="ic">${icon('recharge')}</span>Stock E‑Recharge (tout le réseau)</div><div class="val">${fmtNum(soldeRecharge)} unités</div></div>
+      <div class="kpi-card" style="--accent:var(--teal)"><div class="lbl"><span class="ic">${icon('recharge')}</span>Stock E‑Recharge (tout le réseau)</div><div class="val">${fmtNum(soldeRecharge)} unités</div><div class="delta flat">≈ ${fmtGNF(soldeRecharge*1000)}</div></div>
     </div>
 
     <div class="panel">
@@ -2545,14 +2548,14 @@ function renderStockRechargeView(){
   const centralRow = isRole('Administrateur','Direction','Comptable') ? `
     <div class="panel" style="border:1px solid rgba(31,182,166,.3)">
       <div class="panel-head"><h3>E‑Recharge Central MPS</h3><div class="sub">Niveau 1 — Distributeur</div></div>
-      <div class="kpi-card" style="--accent:var(--teal)"><div class="lbl"><span class="ic">${icon('recharge')}</span> E‑Recharge central</div><div class="val">${fmtNum(DB.stockRecharge.central)} unités</div></div>
+      <div class="kpi-card" style="--accent:var(--teal)"><div class="lbl"><span class="ic">${icon('recharge')}</span> E‑Recharge central</div><div class="val">${fmtNum(DB.stockRecharge.central)} unités</div><div class="delta flat">≈ ${fmtGNF((DB.stockRecharge.central||0)*1000)}</div></div>
     </div>` : '';
 
   const agRows = DB.agences.filter(a=>isInScopeAgence(a.id)).map(a=>{
     const r = DB.stockRecharge[a.id]||0;
     return `<tr>
       <td class="strong">${escapeHtml(a.nom)}</td>
-      <td>${fmtNum(r)} unités ${r<seuilR?'<span class="pill pill-danger">Bas</span>':''}</td>
+      <td>${fmtNum(r)} unités <span style="color:var(--text-dim);font-size:11px">(≈ ${fmtGNF(r*1000)})</span> ${r<seuilR?'<span class="pill pill-danger">Bas</span>':''}</td>
     </tr>`;
   }).join('');
 
@@ -2561,7 +2564,7 @@ function renderStockRechargeView(){
     return `<tr>
       <td class="strong">${escapeHtml(p.nom)}</td>
       <td style="color:var(--text-dim)">${escapeHtml(agenceName(p.agenceId))}</td>
-      <td>${fmtNum(r)} unités ${r<seuilR?'<span class="pill pill-danger">Bas</span>':''}</td>
+      <td>${fmtNum(r)} unités <span style="color:var(--text-dim);font-size:11px">(≈ ${fmtGNF(r*1000)})</span> ${r<seuilR?'<span class="pill pill-danger">Bas</span>':''}</td>
     </tr>`;
   }).join('');
 
@@ -3494,6 +3497,108 @@ function creditsClientsStats(list){
 }
 
 let creditsClientsFilters = { dateDebut:'', dateFin:'' };
+/* =========================================================
+   VUE : OPÉRATIONS — liste combinée Crédits/Avances/Ristournes
+   Un seul écran, un seul bouton d'ajout. Le choix du type dans le
+   formulaire redirige vers le modal détaillé existant de chaque
+   module (réutilise leur logique de validation/sauvegarde sans la
+   dupliquer). Les 3 modules détaillés restent disponibles séparément.
+   ========================================================= */
+let operationsFilters = { type:'', dateDebut:'', dateFin:'' };
+
+function renderOperationsView(){
+  document.getElementById('topbarActions').innerHTML = `<button class="btn btn-gold" onclick="openNouvelleOperationModal()">+ Nouvelle opération</button>`;
+  const host = document.getElementById('viewsHost');
+
+  const credits = (DB.creditsClients||[]).map(c=>({
+    type:'Crédit client', typeKey:'credit', tiers:c.client, montant:c.montant, encaisse:c.montantPaye,
+    date:c.date, statut:c.statut, id:c.id
+  }));
+  const avances = (DB.avances||[]).map(a=>({
+    type:'Avance', typeKey:'avance', tiers:a.deposant + (a.client!=='—'?' → '+a.client:''), montant:a.montant, encaisse:a.montantRembourse,
+    date:a.date, statut:a.statut, id:a.id
+  }));
+  const ristournes = (DB.retours||[]).map(r=>({
+    type:'Ristourne', typeKey:'ristourne', tiers:r.client, montant:r.montant, encaisse:r.montantRembourse,
+    date:r.date, statut:r.statut, id:r.id
+  }));
+
+  let list = [...credits, ...avances, ...ristournes];
+  if(operationsFilters.type) list = list.filter(o=>o.typeKey===operationsFilters.type);
+  if(operationsFilters.dateDebut || operationsFilters.dateFin) list = list.filter(o=>inDateRange(o.date, operationsFilters.dateDebut, operationsFilters.dateFin));
+  list.sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  const totalEncours = list.reduce((s,o)=>s+(o.montant-o.encaisse),0);
+  const totalMontant = list.reduce((s,o)=>s+o.montant,0);
+
+  const typeIcon = { credit:'creditNote', avance:'advance', ristourne:'returns' };
+  const typeAction = {
+    credit:{ label:'Encaisser', fn:'openCreditClientPaiementModal', edit:'openCreditClientModal', del:'deleteCreditClient' },
+    avance:{ label:'Rembourser', fn:'openAvanceRemboursementModal', edit:'openAvanceModal', del:'deleteAvance' },
+    ristourne:{ label:'Encaisser', fn:'openRetourRemboursementModal', edit:'openRetourModal', del:'deleteRetour' },
+  };
+
+  host.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card" style="--accent:var(--gold)"><div class="lbl"><span class="ic">${icon('creditNote')}</span>Total des opérations</div><div class="val">${fmtGNF(totalMontant)}</div></div>
+      <div class="kpi-card" style="--accent:var(--red)"><div class="lbl"><span class="ic">${icon('warning')}</span>Encours global</div><div class="val">${fmtGNF(totalEncours)}</div></div>
+      <div class="kpi-card" style="--accent:var(--teal)"><div class="lbl"><span class="ic">${icon('creditNote')}</span>Nombre d'opérations</div><div class="val">${fmtNum(list.length)}</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Opérations</h3>
+        <div class="chip-select">
+          <select onchange="operationsFilters.type=this.value; renderOperationsView()">
+            <option value="">Tous les types</option>
+            <option value="credit" ${operationsFilters.type==='credit'?'selected':''}>Crédit client</option>
+            <option value="avance" ${operationsFilters.type==='avance'?'selected':''}>Avance</option>
+            <option value="ristourne" ${operationsFilters.type==='ristourne'?'selected':''}>Ristourne</option>
+          </select>
+          ${dateRangeFilterHtml(operationsFilters.dateDebut, operationsFilters.dateFin,
+            "operationsFilters.dateDebut=this.value; renderOperationsView()",
+            "operationsFilters.dateFin=this.value; renderOperationsView()",
+            "operationsFilters.dateDebut=''; operationsFilters.dateFin=''; renderOperationsView()")}
+        </div>
+        <div class="sub">${list.length} opération(s)</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Type</th><th>Tiers</th><th>Date</th><th>Montant</th><th>Reçu/Payé</th><th>Reste</th><th>Statut</th><th></th></tr></thead>
+          <tbody>${list.length ? list.map(o=>{
+            const reste = o.montant - o.encaisse;
+            const act = typeAction[o.typeKey];
+            return `<tr>
+              <td><span class="ic">${icon(typeIcon[o.typeKey])}</span> ${escapeHtml(o.type)}</td>
+              <td class="strong">${escapeHtml(o.tiers)}</td>
+              <td style="white-space:nowrap">${fmtDate(o.date)}</td>
+              <td>${fmtGNF(o.montant)}</td>
+              <td style="color:var(--green)">${fmtGNF(o.encaisse)}</td>
+              <td style="color:${reste>0?'var(--red)':'var(--text-dim)'}">${fmtGNF(reste)}</td>
+              <td><span class="pill ${o.statut==='Soldé'?'pill-ok':'pill-warn'}">${escapeHtml(o.statut)}</span></td>
+              <td style="white-space:nowrap">
+                ${reste>0?`<button class="btn btn-teal btn-sm" onclick="${act.fn}('${o.id}')">${act.label}</button>`:''}
+                <button class="btn btn-outline btn-sm" onclick="${act.edit}('${o.id}')">Modifier</button>
+                <button class="btn btn-danger btn-sm" onclick="${act.del}('${o.id}')">Suppr.</button>
+              </td>
+            </tr>`;
+          }).join('') : `<tr><td colspan="8">Aucune opération ne correspond aux filtres.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function openNouvelleOperationModal(){
+  openModal(`
+    <div class="modal-head"><h3>Nouvelle opération</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+    <p style="font-size:12.5px;color:var(--text-mid);margin-top:-8px">Choisissez le type d'opération à enregistrer.</p>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-top:6px">
+      <button class="btn btn-outline" style="justify-content:flex-start;gap:10px" onclick="closeModal(); openCreditClientModal()"><span class="ic">${icon('creditNote')}</span> Crédit client — créance accordée à un client</button>
+      <button class="btn btn-outline" style="justify-content:flex-start;gap:10px" onclick="closeModal(); openAvanceModal()"><span class="ic">${icon('advance')}</span> Avance — dépôt reçu à rembourser</button>
+      <button class="btn btn-outline" style="justify-content:flex-start;gap:10px" onclick="closeModal(); openRetourModal()"><span class="ic">${icon('returns')}</span> Ristourne — bonus attendu d'un distributeur</button>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn btn-outline" onclick="closeModal()">Annuler</button></div>`);
+}
+
 function renderCreditsClientsView(){
   document.getElementById('topbarActions').innerHTML = `<button class="btn btn-gold" onclick="openCreditClientModal()">+ Nouveau crédit</button>`;
   const host = document.getElementById('viewsHost');
@@ -4150,7 +4255,7 @@ function buildRecapData(){
 
   const kpis = [
     ['Stock Float', fmtGNF(stockFloat)],
-    ['Stock E-Recharge', fmtNum(stockRecharge)+' unités'],
+    ['Stock E-Recharge', fmtNum(stockRecharge)+' unités (≈ '+fmtGNF(stockRecharge*1000)+')'],
     ['Volume ventes', fmtGNF(totalVentes)],
     ['Encours crédits', fmtGNF(csStats.encours)],
   ];
@@ -4161,7 +4266,7 @@ function buildRecapData(){
       ['Commandes enregistrées', fmtNum(commandes.length)],
     ]},
     { titre:'E-Recharge', ic:'recharge', rows:[
-      ['Stock e-recharge réseau (visible)', fmtNum(stockRecharge)+' unités'],
+      ['Stock e-recharge réseau (visible)', fmtNum(stockRecharge)+' unités (≈ '+fmtGNF(stockRecharge*1000)+')'],
       ['Stock grossiste (Orange GN)', fmtGNF(soldeStockELivre.montant)+' · '+fmtNum(soldeStockELivre.paquets)+' paquets'],
     ]},
     { titre:'Activité commerciale', ic:'sales', rows:[
