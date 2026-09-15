@@ -3820,12 +3820,21 @@ function renderRetoursView(){
 function openRetourModal(id){
   const existing = id ? DB.retours.find(r=>r.id===id) : null;
   const distributeursConnus = ['Orange GN', 'OFMG'];
+  const existingIsKnown = existing && distributeursConnus.includes(existing.client);
+  const existingIsAutre = existing && !existingIsKnown;
   openModal(`
     <div class="modal-head"><h3>${existing?'Modifier la ristourne':'Nouvelle ristourne'}</h3><button class="modal-close" onclick="closeModal()">×</button></div>
     <form id="rtForm">
       <div class="form-grid">
-        <div class="field"><label>Distributeur</label><input type="text" id="rtClient" list="rtDistribList" placeholder="ex. Orange GN" value="${existing?escapeHtml(existing.client):''}" required>
-          <datalist id="rtDistribList">${distributeursConnus.map(d=>`<option value="${escapeHtml(d)}">`).join('')}</datalist>
+        <div class="field"><label>Distributeur</label>
+          <select id="rtClientSelect">
+            ${distributeursConnus.map(d=>`<option value="${escapeHtml(d)}" ${existing&&existing.client===d?'selected':''}>${escapeHtml(d)}</option>`).join('')}
+            <option value="__autre" ${existingIsAutre?'selected':''}>Autre (préciser)…</option>
+          </select>
+        </div>
+        <div class="field full" id="rtClientAutreWrap" style="display:${existingIsAutre?'':'none'}">
+          <label>Précisez le distributeur</label>
+          <input type="text" id="rtClientAutre" placeholder="Nom du distributeur" value="${existingIsAutre?escapeHtml(existing.client):''}">
         </div>
         <div class="field"><label>Montant ristourné (GNF)</label><input type="number" id="rtMontant" min="${existing?existing.montantRembourse:1}" value="${existing?existing.montant:''}" required></div>
         <div class="field full"><label>Date</label><input type="date" id="rtDate" value="${existing?existing.date:todayISO()}" required></div>
@@ -3836,20 +3845,27 @@ function openRetourModal(id){
         <button type="submit" class="btn btn-gold">Enregistrer</button>
       </div>
     </form>`);
+  const rtClientSelectEl = document.getElementById('rtClientSelect'), rtClientAutreWrap = document.getElementById('rtClientAutreWrap'), rtClientAutreEl = document.getElementById('rtClientAutre');
+  rtClientSelectEl.addEventListener('change', ()=>{
+    const isAutre = rtClientSelectEl.value === '__autre';
+    rtClientAutreWrap.style.display = isAutre ? '' : 'none';
+  });
   document.getElementById('rtForm').addEventListener('submit', e=>{
     e.preventDefault();
     const montant = parsePositiveAmount(document.getElementById('rtMontant').value);
     const errEl = document.getElementById('rtError');
     if(montant===null){ errEl.textContent = 'Le montant doit être un nombre positif.'; return; }
+    const distributeur = rtClientSelectEl.value === '__autre' ? rtClientAutreEl.value.trim() : rtClientSelectEl.value;
+    if(!distributeur){ errEl.textContent = 'Veuillez préciser le distributeur.'; return; }
     if(existing){
       if(montant < existing.montantRembourse){ errEl.textContent = `Le montant ne peut pas être inférieur au montant déjà reçu (${fmtGNF(existing.montantRembourse)}).`; return; }
-      existing.client = document.getElementById('rtClient').value.trim();
+      existing.client = distributeur;
       existing.montant = montant; existing.date = document.getElementById('rtDate').value;
       existing.statut = existing.montantRembourse >= existing.montant ? 'Soldé' : 'En cours';
       logActivity(`Ristourne modifiée : ${fmtGNF(montant)} (${existing.client})`);
       saveDB(); closeModal(); renderRetoursView(); toast('Ristourne mise à jour','success');
     } else {
-      DB.retours.unshift({ id: uid('RT'), client: document.getElementById('rtClient').value.trim(),
+      DB.retours.unshift({ id: uid('RT'), client: distributeur,
         montant, montantRembourse: 0, date: document.getElementById('rtDate').value, statut:'En cours' });
       logActivity(`Ristourne enregistrée : ${fmtGNF(montant)}`);
       saveDB(); closeModal(); renderRetoursView(); toast('Ristourne enregistrée','success');
